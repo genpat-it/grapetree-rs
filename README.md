@@ -1,19 +1,33 @@
-# grapetree-rs
+<h1 align="center">🍇🌳 grapetree-rs</h1>
+
+<p align="center">
+  <em>A fast, self-contained Rust port of GrapeTree's tree &amp; distance engine.</em>
+</p>
+
+<p align="center">
+  <a href="https://github.com/genpat-it/grapetree-rs/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/genpat-it/grapetree-rs/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="License: GPL v3" src="https://img.shields.io/badge/license-GPLv3-blue.svg"></a>
+  <img alt="Rust 2021" src="https://img.shields.io/badge/rust-2021-orange.svg?logo=rust">
+  <img alt="Status: experimental" src="https://img.shields.io/badge/status-experimental-yellow.svg">
+  <img alt="Fidelity" src="https://img.shields.io/badge/vs%20reference-byte--identical%20(most%20params)-brightgreen.svg">
+</p>
 
 > ⚠️ **Experimental.** This is an independent, work-in-progress reimplementation
 > for research and evaluation. Output matches the reference on the vast majority
 > of inputs (see *Fidelity* below), but it is not yet a validated drop-in
 > replacement — verify results against upstream GrapeTree for production use.
 
-A fast, self-contained Rust port of [GrapeTree](https://github.com/achtman-lab/GrapeTree)'s
-computational backend — the engine that turns an allelic profile (cgMLST/wgMLST/SNP)
-into a **NEWICK tree** or a **PHYLIP distance matrix**.
+Turns an allelic profile (cgMLST / wgMLST / SNP) into a **NEWICK tree** or a
+**PHYLIP distance matrix** — a Rust port of
+[GrapeTree](https://github.com/achtman-lab/GrapeTree)'s computational backend.
 
-It reproduces the reference algorithms (MSTree, MSTreeV2, Neighbor-Joining,
-distance) with high fidelity — mostly **byte-identical** output — while running
-several times faster and needing **no external binaries** (the reference shells
-out to compiled `edmonds`, FastME, RapidNJ and Ninja; here everything is native
-Rust).
+### Highlights
+
+- 🧬 **All methods** — `MSTreeV2`, `MSTree`, `NJ`, `RapidNJ`, `ninja`, `distance`, full CLI parity
+- 🎯 **Faithful** — byte-identical to the reference on most parameter combinations
+- 🦀 **Self-contained** — native Chu-Liu/Edmonds & Neighbor-Joining; no `edmonds`/FastME/RapidNJ/Ninja binaries
+- ⚡ **Fast** — rayon-parallel distance kernel; `distance` 2.9–13×, `MSTreeV2` 1.3–6.9× vs Python
+- ✅ **Tested** — per-parameter regression harness against the Python reference
 
 > Scope: this ports the scientific engine (`module/MSTrees.py`). The Flask web
 > server and the D3 visualiser that ship with GrapeTree are UI shells around it
