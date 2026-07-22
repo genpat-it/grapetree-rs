@@ -65,6 +65,31 @@ a `.gz` of either, or the file contents passed inline.
 
 `MSTreeV2` is an alias for `MSTree -x asymmetric -t harmonic -r`.
 
+### All options (`grapetree --help`)
+
+```text
+Rust port of GrapeTree: NEWICK tree / distance matrix from allelic profiles
+
+Usage: grapetree [OPTIONS] --profile <PROFILE>
+
+Options:
+  -p, --profile <PROFILE>              Input file (MLST/SNP profile TSV, or aligned FASTA). `.gz` supported
+  -m, --method <METHOD>                MSTreeV2 [default], MSTree, NJ, RapidNJ, ninja, distance [default: MSTreeV2]
+  -x, --matrix <MATRIX_TYPE>           symmetric [default for MSTree/NJ], asymmetric, blockwise [default: symmetric]
+  -r, --recraft                        Trigger local branch recrafting (forced on for MSTreeV2)
+  -y, --missing <HANDLER>              Missing-data handler: 0 pair_delete [default], 1 complete_delete, 2 as_allele, 3 absolute_distance. (symmetric distance matrix only) [default: 0]
+  -w, --wgMLST                         [experimental] better support for wgMLST schemes
+  -t, --heuristic <HEURISTIC>          Tiebreak heuristic: eBurst [default MSTree] or harmonic [default MSTreeV2] [default: eBurst]
+  -n, --n_proc <N_PROC>                Number of parallel worker threads (performance only; results unchanged) [default: 5]
+  -c, --check                          Only report estimated time/memory requirements
+  -b, --block_penalty <BLOCK_PENALTY>  Penalty for a different locus led by another difference (blockwise only) [default: 0.01]
+      --native                         Use the pure-Rust native arborescence/NJ instead of the bundled reference binaries. Faster and self-contained, but only topologically equivalent (RF=0), not bit-identical to upstream GrapeTree. Default: bit-identical
+  -h, --help                           Print help
+```
+
+Diagnostics: set `GT_TIMING=1` to print per-phase timings (distance / weights /
+arborescence / recraft / tree) to stderr — useful on large inputs.
+
 ## Fidelity vs the reference
 
 Verified against the Python reference (run in an isolated env) over synthetic
@@ -101,15 +126,23 @@ Two upstream bugs are fixed simply by porting cleanly:
 
 ## Performance
 
-Native Chu-Liu/Edmonds (lazy skew heap + rollback union-find, O(E log V)) and a
-rayon-parallel distance kernel. Faster than the Python + compiled-binary pipeline
-at every size tested (see `BENCHMARKS.md`):
+Native Chu-Liu/Edmonds and a rayon-parallel distance kernel. Faster than the
+Python + compiled-binary pipeline at every size tested (see `BENCHMARKS.md`):
 
 | N | `distance` | `MSTreeV2` |
 |---|-----------|-----------|
 | 300 | 4.9× | 6.9× |
 | 1000 | 2.6× | 2.2× (47s → 1.4s vs the old naive Edmonds) |
 | 2000 | 2.9× | 1.3× |
+
+**At 60k+ samples** the minimum spanning arborescence (not the distance step)
+dominates, because the reduced graph is near-complete. grapetree-rs picks the
+right Chu-Liu/Edmonds for the size: the skew-heap (`O(E log V)`) below 10k
+survivors, and a **dense `O(V)`-memory contraction** above it — both return the
+identical arborescence. On a real *Campylobacter* set (63,005 samples × 1,142
+loci, 64 threads) MSTreeV2 completes in **3 min 28 s at 46 GB**; the skew-heap
+alone would need ~20 GB of edge list and had not finished in 35 min. See
+`BENCHMARKS.md`.
 
 ## Regression suite
 

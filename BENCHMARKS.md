@@ -91,3 +91,30 @@ several seeds and sizes.
 On the same-size but adversarial "several maximally-distant clusters" input,
 neither tool finishes quickly (shortcuts never fire) — so scalability comes from
 the data being clonal, which is the regime GrapeTree targets.
+
+## Real-world scale: *Campylobacter* cgMLST, 63,005 samples
+
+The scaling wall for MSTreeV2 is the minimum spanning **arborescence**, not the
+distance step. On a real *Campylobacter* set (63,005 samples × 1,142 loci, 64
+threads), `get_shortcut` collapses the 57,402 non-redundant profiles to 24,627
+survivors — but that reduced graph is (near) complete: **~6.1×10⁸ directed
+edges**. The skew-heap Edmonds materialises all of them (`O(E)` memory, ~20 GB of
+edge list) and never finished in 35 min (killed at 74 GB, still climbing).
+
+A **dense `O(V)`-memory Chu-Liu/Edmonds** (`optimum_branching_dense`, Boruvka-style
+cycle contraction; reuses the matrix already in RAM) fixes both time and memory:
+
+| MSTreeV2, 63,005 samples, 64 threads | wall        | peak RAM | tree      |
+|--------------------------------------|-------------|----------|-----------|
+| skew-heap Edmonds (`O(E)` mem)       | >35 min ✗   | ≥74 GB   | not produced |
+| **dense Edmonds (`O(V)` mem)**       | **3 m 28 s**| **46 GB**| 63,005 leaves ✅ |
+
+Phase breakdown (dense): distance **66 s** · weights **2 s** · get_shortcut +
+arborescence **108 s** · recraft **1.9 s** · tree write **0.15 s**. CPU averaged
+912 % (distance is parallel; the arborescence is inherently serial).
+
+Both Edmonds implementations return the **identical** arborescence (the MSTreeV2
+optimum is unique), so the tree is byte-identical to what the slow path would
+produce — only ~10× faster and at ~half the memory. A hybrid (`DENSE_THRESHOLD =
+10_000` survivors) keeps the skew-heap for small/ultra-clonal graphs where it is
+faster, and switches to dense above it.

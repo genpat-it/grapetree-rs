@@ -181,10 +181,20 @@ fn main() -> Result<()> {
             print!("{out}");
         }
         "MSTree" => {
+            let timing = std::env::var("GT_TIMING").is_ok();
+            let t0 = std::time::Instant::now();
             let dm = distance::compute(&parsed, kind, params.handle_missing, params.block_penalty);
+            if timing {
+                eprintln!("[timing] distance: {:.2}s", t0.elapsed().as_secs_f64());
+            }
+            let t1 = std::time::Instant::now();
             let n_str = parsed.n_str();
             let heur = Heuristic::parse(&params.heuristic);
             let weight = heuristic::weights(&dm, &n_str, heur);
+            if timing {
+                eprintln!("[timing] weights: {:.2}s", t1.elapsed().as_secs_f64());
+            }
+            let t2 = std::time::Instant::now();
             let edges: Vec<(usize, usize)> = match kind {
                 MatrixKind::Symmetric | MatrixKind::Blockwise => mst::symmetric_mst(&dm, &weight),
                 MatrixKind::Asymmetric => {
@@ -206,19 +216,31 @@ fn main() -> Result<()> {
                             }
                         }
                     };
+                    if timing {
+                        eprintln!("[timing] arborescence: {:.2}s", t2.elapsed().as_secs_f64());
+                    }
+                    let tr = std::time::Instant::now();
                     let net = if params.branch_recraft {
                         recraft::branch_recraft(net, &dm, &weight, parsed.n_cols as f64)
                     } else {
                         net
                     };
+                    if timing {
+                        eprintln!("[timing] recraft: {:.2}s", tr.elapsed().as_secs_f64());
+                    }
                     net.into_iter().map(|(s, t, _)| (s, t)).collect()
                 }
                 MatrixKind::AsymmetricWgMlst => unreachable!("wgMLST is not produced by resolve()"),
             };
+            let t3 = std::time::Instant::now();
             let linked = mst::symmetric_link(&parsed, &edges, params.handle_missing);
             let mut tree = Tree::network2tree(&linked, &parsed.names);
             tree.post_process(&parsed);
-            println!("{}", tree.to_newick());
+            let nwk = tree.to_newick();
+            if timing {
+                eprintln!("[timing] link+tree: {:.2}s", t3.elapsed().as_secs_f64());
+            }
+            println!("{}", nwk);
         }
         "NJ" | "RapidNJ" | "ninja" => {
             let dm = distance::compute(

@@ -172,3 +172,72 @@ gradients, blockwise-ordered loci). Compare:
   never bound on the FASTA branch — an upstream bug), so it cannot be compared;
   grapetree-rs parses aligned FASTA correctly (each column = a locus) and runs.
   Two upstream bugs are thus fixed-by-porting: `--wgMLST` (dead code) and FASTA.
+- 2026-07-22: **Scaling MSTreeV2 to 60k+ real samples — the dense Chu-Liu/Edmonds.**
+  Running MSTreeV2 on a real *Campylobacter* cgMLST set (63,005 samples × 1,142
+  loci, 64 threads) exposed the true scaling wall — and it was *not* where a first
+  guess put it.
+
+  **Problem, diagnosed with per-phase timing (`GT_TIMING=1`):**
+  - distance 66 s, weights 2 s — fast, rayon-parallel.
+  - `get_shortcut` reduced 57,402 non-redundant profiles to **24,627 survivors**
+    (real cgMLST *does* collapse well; a naive synthetic-clonal set collapsed
+    almost none — a lesson: validate on real data, not the worst-case synthetic).
+  - **the minimum spanning arborescence was the wall.** The reduced graph is
+    (near) complete: m = 24,627 survivors ⇒ **~6.06×10⁸ directed edges**. The
+    existing skew-heap Chu-Liu/Edmonds is `O(E log V)` in time **and `O(E)` in
+    memory** — it materialises every edge as a heap node (~32 B) plus an edge
+    record (~16 B). That is ~20 GB *just for the edge list*, on top of two 13 GB
+    distance matrices, and the per-edge heap churn made it run for >35 min without
+    finishing (killed at 74 GB and still climbing).
+  - `branch_recraft` was a **red herring** — its memory is `O(n)`; the earlier
+    suspicion that it was the bottleneck was wrong. (It was still optimised, see
+    below, but it is not the scaling limit.)
+
+  **What is different from GrapeTree here:** upstream shells out to a compiled C
+  `edmonds` binary, writing the m×m reduced cost matrix as a **text file** and
+  reading the arborescence back. That is the *same* `O(m²)` work — a ~24k×24k
+  text matrix is multi-GB of I/O — just in C instead of Rust. Neither tool
+  escapes the `O(m²)` density; the reference's own `-c` estimate for this size is
+  ~2.7 h / ~412 GB.
+
+  **Solution — a dense `O(V)`-memory Chu-Liu/Edmonds** (`optimum_branching_dense`
+  in `src/edmonds.rs`). Boruvka-style contraction: each round every non-root
+  super-node takes its cheapest incoming edge, *all* resulting cycles are
+  contracted at once, and the cost matrix is rebuilt over the shrunken super-node
+  set; cycles are expanded in reverse at the end (routing each external edge to
+  the cycle member that *contains* its real target, via per-round label
+  snapshots). No per-edge heap nodes, no materialised edge list — it reuses the
+  matrix already in RAM.
+  - **Result on the Campylobacter set: 3 min 28 s, peak 46 GB** (vs >35 min /
+    ≥74 GB and never finishing). The arborescence itself dropped from tens of
+    minutes to ~108 s (including `get_shortcut`); recraft 1.9 s; tree write 0.15 s.
+  - **Hybrid dispatch** (`src/mst.rs`, `DENSE_THRESHOLD = 10_000`): the dense
+    variant wins on large `m`, but on *ultra-clonal* graphs (many tiny cycles ⇒
+    many contraction rounds ⇒ `O(rounds·m²)`) the skew-heap is faster and its
+    `O(m²)` memory is harmless when `m` is small. So below 10k survivors we keep
+    the skew-heap, above it we switch to dense. Both return the **same**
+    arborescence.
+
+  **Bit-identity status after this change — unchanged, and re-verified.** The two
+  Edmonds implementations are byte-identical because the MSTreeV2 optimum is
+  *unique*: the incoming costs to any node, `round(d[i][j]) + weight[i]`, are
+  pairwise distinct (the harmonic `weight` is a distinct rank per source), so
+  there are no ties for any correct algorithm to break differently. Verified by:
+  (a) a property test comparing dense vs skew-heap over random matrices *with*
+  ties, n = 2..30 (`dense_matches_heap`, `dense_identical_when_unique`); and
+  (b) the regression golden — **7/7 datasets (incl. clonal-2k/5k) byte-identical**
+  in both `--native` and default modes before/after the change. The overall
+  fidelity tally is untouched: distance 7/7, MSTree-sym 7/7, MSTree-asym 7/7,
+  MSTreeV2 6/7 (the one residual is the known NEWICK child-order case, RF=0, equal
+  length), NJ 7/7, RapidNJ 7/7.
+
+- 2026-07-22: **`branch_recraft` made O(n²)-cheaper without changing output.**
+  The faithful port cloned each endpoint's whole group every iteration and
+  `sorted(...)[:3]` over it. Three output-preserving changes: groups read by
+  reference (no clone); `group_id`/`groups`/`childrens` are `Vec`s indexed by
+  node id (the reference's numpy fancy-assign `group_id[targets]=…` becomes an
+  O(group) array write, not hashed inserts); and the "3 nearest" taken by partial
+  selection instead of a full sort — safe because the candidate key
+  `(weight, dist, node_id)` is a *total* order (node id is unique), so the three
+  smallest are unambiguous and identical to `sorted(...)[:3]`. Byte-identical on
+  all 7 regression datasets; recraft at 63k now 1.9 s.

@@ -168,14 +168,33 @@ pub fn asymmetric_network(dist: &DistMatrix, weight: &[f64]) -> Vec<(usize, usiz
     }
     let kept: Vec<usize> = (0..n).filter(|&i| !removed[i]).collect();
     let m = kept.len();
+    if std::env::var("GT_TIMING").is_ok() {
+        eprintln!(
+            "[timing] n={n} shortcuts={} survivors(m)={m} edmonds_edges={}",
+            shortcuts.len(),
+            m * m
+        );
+    }
 
     let mut edges: Vec<(usize, usize, f64)> = Vec::new();
     if m >= 2 {
-        let cost = |i: usize, j: usize| -> Option<f64> {
+        let cost = |i: usize, j: usize| -> f64 {
             let (oi, oj) = (kept[i], kept[j]);
-            Some((d[oi * n + oj] as f64).round() + weight[oi])
+            (d[oi * n + oj] as f64).round() + weight[oi]
         };
-        let arb = edmonds::optimum_branching(m, cost);
+        // Two byte-identical Chu-Liu/Edmonds implementations, chosen by size:
+        //   - skew-heap (O(E log V) time, O(E)=O(m²) memory): fast for small m,
+        //     and robust when the reduced graph is ultra-clonal (many tiny cycles);
+        //   - dense matrix (O(V) memory beyond the matrix): the skew-heap's m²
+        //     edge list blows up past ~10k survivors (~20 GB at m≈25k), so above
+        //     the threshold we reuse the matrix already in RAM instead.
+        // Both return the same arborescence (the optimum is unique for MSTreeV2).
+        const DENSE_THRESHOLD: usize = 10_000;
+        let arb = if m >= DENSE_THRESHOLD {
+            edmonds::optimum_branching_dense(m, cost)
+        } else {
+            edmonds::optimum_branching(m, |i, j| Some(cost(i, j)))
+        };
         for (u, v) in arb {
             let (os, ot) = (kept[u], kept[v]);
             // Reproduce the reference's edmonds text round-trip exactly: the

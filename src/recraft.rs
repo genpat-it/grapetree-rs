@@ -4,6 +4,25 @@
 //! endpoint-weights) order, and try to re-attach each branch's source/target to
 //! a better-fitting nearby node, gated by a contemporaneity likelihood test.
 //! Groups are merged union-find-style as branches commit.
+//!
+//! Performance note (GRAPETREE-COMPAT[recraft-perf]): the algorithm's greedy
+//! spine is inherently sequential (each branch's decision depends on the merged
+//! group state left by all prior commits, and the processing order itself is
+//! re-derived as branch lengths change). What is *not* inherent is the original
+//! port's per-iteration O(group) overhead. Three output-preserving speedups vs a
+//! naive transcription of the reference:
+//!   1. the endpoint groups are read by reference, never cloned;
+//!   2. `group_id` / `groups` / `childrens` are `Vec`s indexed by node id (the
+//!      endpoints are dense indices `0..n`), so the reference's numpy fancy
+//!      assignment `group_id[targets] = group_id[src]` is an O(group) array write
+//!      rather than O(group) hashed inserts;
+//!   3. the "3 nearest candidates" are taken with a partial selection instead of
+//!      a full sort. The candidate order is a *total* order (the tuple's last key
+//!      is the unique node id), so selecting the 3 smallest is unambiguous and
+//!      byte-identical to `sorted(...)[:3]`.
+//!
+//! None of these change which branches are chosen or in what order — the output
+//! NEWICK is bit-identical to the reference (verified by the regression golden).
 
 use crate::distance::DistMatrix;
 use std::collections::HashMap;
@@ -43,6 +62,20 @@ fn d(dist: &DistMatrix, i: usize, j: usize) -> f64 {
     dist.get(i, j) as f64
 }
 
+/// Reorder `cand` so its first `min(3, len)` entries are the three smallest, in
+/// exact ascending order. The comparison is a *total* order (the final tuple
+/// element is a unique node id), so this is byte-identical to a full stable sort
+/// followed by `take(3)` — only cheaper (O(n) selection vs O(n log n) sort).
+/// Entries past index 3 are left unspecified; the callers only read `take(3)`.
+#[inline]
+fn top3(cand: &mut [(f64, f64, usize)]) {
+    let k = cand.len().min(3);
+    if cand.len() > k {
+        cand.select_nth_unstable_by(k - 1, |a, b| a.partial_cmp(b).unwrap());
+    }
+    cand[..k].sort_by(|a, b| a.partial_cmp(b).unwrap());
+}
+
 /// Port of `_branch_recraft`. `branches` are `(src, tgt, brlen)`; `dist` is the
 /// (asymmetric) distance matrix; `weights` the node weights; `n_loci` the loci
 /// count. Returns the recrafted branch list.
@@ -52,17 +85,14 @@ pub fn branch_recraft(
     weights: &[f64],
     n_loci: f64,
 ) -> Vec<(usize, usize, f64)> {
-    // group/adjacency bookkeeping over all endpoints
-    let mut group_id: HashMap<usize, usize> = HashMap::new();
-    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
-    let mut childrens: HashMap<usize, Vec<usize>> = HashMap::new();
-    for &(s, t, _) in &branches {
-        for b in [s, t] {
-            group_id.entry(b).or_insert(b);
-            groups.entry(b).or_insert_with(|| vec![b]);
-            childrens.entry(b).or_default();
-        }
-    }
+    // group/adjacency bookkeeping over all endpoints. Endpoints are dense node
+    // ids in `0..n` (a spanning tree over `n` nodes touches them all), so `Vec`s
+    // indexed by id replace the reference's dict/numpy-array bookkeeping without
+    // changing behaviour — just dropping the hashing overhead.
+    let n = weights.len();
+    let mut group_id: Vec<usize> = (0..n).collect();
+    let mut groups: Vec<Vec<usize>> = (0..n).map(|i| vec![i]).collect();
+    let mut childrens: Vec<Vec<usize>> = vec![Vec::new(); n];
 
     // initial sort by [dist[src][tgt], sorted(weights[src], weights[tgt])]
     let sort_key = |br: &(usize, usize, f64)| -> (f64, f64, f64) {
@@ -75,17 +105,19 @@ pub fn branch_recraft(
     let mut i = 0usize;
     while i < branches.len() {
         let (mut src, mut tgt, _) = branches[i];
-        let sources = groups[&group_id[&src]].clone();
-        let targets = groups[&group_id[&tgt]].clone();
+        // group ids of the *original* endpoints (captured before re-attachment,
+        // exactly like the reference snapshots `sources`/`targets` up front).
+        let src_gid = group_id[src];
+        let tgt_gid = group_id[tgt];
         let mut tried: HashMap<usize, usize> = HashMap::new();
 
         // --- try to re-attach the source end ---
-        if sources.len() > 1 {
-            let mut cand: Vec<(f64, f64, usize)> = sources
+        if groups[src_gid].len() > 1 {
+            let mut cand: Vec<(f64, f64, usize)> = groups[src_gid]
                 .iter()
                 .map(|&s| (weights[s], d(dist, s, tgt), s))
                 .collect();
-            cand.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            top3(&mut cand);
             for &(_, dd, s) in cand.iter().take(3) {
                 if s == src {
                     break;
@@ -107,7 +139,7 @@ pub fn branch_recraft(
             while !tried.contains_key(&src) {
                 tried.insert(src, src);
                 let dsrctgt = d(dist, src, tgt);
-                let mut mid: Vec<(f64, f64, usize)> = childrens[&src]
+                let mut mid: Vec<(f64, f64, usize)> = childrens[src]
                     .iter()
                     .filter(|&&s| !tried.contains_key(&s) && d(dist, s, tgt) < 2.0 * dsrctgt)
                     .map(|&s| (weights[s], d(dist, s, tgt), s))
@@ -145,12 +177,12 @@ pub fn branch_recraft(
         }
 
         // --- try to re-attach the target end (mirror of the source block) ---
-        if targets.len() > 1 {
-            let mut cand: Vec<(f64, f64, usize)> = targets
+        if groups[tgt_gid].len() > 1 {
+            let mut cand: Vec<(f64, f64, usize)> = groups[tgt_gid]
                 .iter()
                 .map(|&t| (weights[t], d(dist, src, t), t))
                 .collect();
-            cand.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            top3(&mut cand);
             for &(_, dd, t) in cand.iter().take(3) {
                 if t == tgt {
                     break;
@@ -172,7 +204,7 @@ pub fn branch_recraft(
             while !tried.contains_key(&tgt) {
                 tried.insert(tgt, tgt);
                 let dsrctgt = d(dist, src, tgt);
-                let mut mid: Vec<(f64, f64, usize)> = childrens[&tgt]
+                let mut mid: Vec<(f64, f64, usize)> = childrens[tgt]
                     .iter()
                     .filter(|&&t| !tried.contains_key(&t) && d(dist, src, t) < 2.0 * dsrctgt)
                     .map(|&t| (weights[t], d(dist, src, t), t))
@@ -213,19 +245,25 @@ pub fn branch_recraft(
         branches[i] = (src, tgt, brlen);
 
         if i >= branches.len() - 1 || branches[i + 1].2 >= brlen {
-            // commit: merge tgt's group into src's; record adjacency
-            let gsrc = group_id[&src];
-            let tid = group_id[&tgt];
-            for &t in &targets {
-                group_id.insert(t, gsrc);
+            // commit: merge tgt's group into src's; record adjacency.
+            let gsrc = group_id[src];
+            let tid = group_id[tgt];
+            // Re-point every member of the *original* target group to gsrc
+            // (reference: `group_id[targets] = group_id[src]`). `group_id` and
+            // `groups` are distinct `Vec`s, so we can read the member list while
+            // writing ids. `groups[tgt_gid]` is untouched until the take below,
+            // so it still holds the pre-commit snapshot the reference used.
+            let m = groups[tgt_gid].len();
+            for idx in 0..m {
+                let t = groups[tgt_gid][idx];
+                group_id[t] = gsrc;
             }
             if tid != gsrc {
-                if let Some(mut popped) = groups.remove(&tid) {
-                    groups.get_mut(&gsrc).unwrap().append(&mut popped);
-                }
+                let mut popped = std::mem::take(&mut groups[tid]);
+                groups[gsrc].append(&mut popped);
             }
-            childrens.get_mut(&src).unwrap().push(tgt);
-            childrens.get_mut(&tgt).unwrap().push(src);
+            childrens[src].push(tgt);
+            childrens[tgt].push(src);
             i += 1;
         } else {
             // not yet the minimum remaining branch: re-sort the tail by brlen
