@@ -1,0 +1,50 @@
+name: Release
+
+# Tag without a leading "v" (e.g. `0.1.0`) to cut a release.
+on:
+  push:
+    tags: ['[0-9]+.[0-9]+.[0-9]+']
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  binary:
+    name: Static Linux binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --target x86_64-unknown-linux-musl
+      - name: Package
+        run: |
+          BIN=target/x86_64-unknown-linux-musl/release/grapetree
+          strip "$BIN"
+          tar -czf grapetree-${GITHUB_REF_NAME}-x86_64-linux-musl.tar.gz -C "$(dirname "$BIN")" grapetree
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: grapetree-*-x86_64-linux-musl.tar.gz
+          generate_release_notes: true
+
+  docker:
+    name: Docker image → GHCR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            ghcr.io/${{ github.repository }}:latest

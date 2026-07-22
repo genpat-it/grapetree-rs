@@ -1,0 +1,137 @@
+# grapetree-rs
+
+> ⚠️ **Experimental.** This is an independent, work-in-progress reimplementation
+> for research and evaluation. Output matches the reference on the vast majority
+> of inputs (see *Fidelity* below), but it is not yet a validated drop-in
+> replacement — verify results against upstream GrapeTree for production use.
+
+A fast, self-contained Rust port of [GrapeTree](https://github.com/achtman-lab/GrapeTree)'s
+computational backend — the engine that turns an allelic profile (cgMLST/wgMLST/SNP)
+into a **NEWICK tree** or a **PHYLIP distance matrix**.
+
+It reproduces the reference algorithms (MSTree, MSTreeV2, Neighbor-Joining,
+distance) with high fidelity — mostly **byte-identical** output — while running
+several times faster and needing **no external binaries** (the reference shells
+out to compiled `edmonds`, FastME, RapidNJ and Ninja; here everything is native
+Rust).
+
+> Scope: this ports the scientific engine (`module/MSTrees.py`). The Flask web
+> server and the D3 visualiser that ship with GrapeTree are UI shells around it
+> and are out of scope.
+
+## Build
+
+```bash
+cd grapetree-rs
+cargo build --release      # binary at target/release/grapetree
+cargo test --release       # unit + property tests
+```
+
+## Usage
+
+```bash
+grapetree -p <profile> [-m METHOD] [options] > tree.nwk
+```
+
+Input may be a MLST/SNP profile TSV, an aligned FASTA (each column = a locus),
+a `.gz` of either, or the file contents passed inline.
+
+| Flag | Meaning | Default |
+|------|---------|---------|
+| `-p, --profile` | input file / `.gz` / inline text | (required) |
+| `-m, --method` | `MSTreeV2`, `MSTree`, `NJ`, `RapidNJ`, `ninja`, `distance` | `MSTreeV2` |
+| `-x, --matrix` | `symmetric`, `asymmetric`, `blockwise` | `symmetric` (MSTreeV2 forces `asymmetric`) |
+| `-y, --missing` | `0` pair-delete, `1` complete-delete, `2` as-allele, `3` absolute | `0` |
+| `-t, --heuristic` | `eBurst`, `harmonic` (tie-break for MST) | `eBurst` (MSTreeV2 forces `harmonic`) |
+| `-r, --recraft` | local branch recrafting | off (MSTreeV2 forces on) |
+| `-w, --wgMLST` | wgMLST support (see note) | off |
+| `-n, --n_proc` | worker threads (performance only) | 5 |
+| `-b, --block_penalty` | penalty for `blockwise` | 0.01 |
+| `-c, --check` | print estimated time/memory JSON | off |
+
+`MSTreeV2` is an alias for `MSTree -x asymmetric -t harmonic -r`.
+
+## Fidelity vs the reference
+
+Verified against the Python reference (run in an isolated env) over synthetic
+datasets (clonal structure, duplicates, missing-data gradients) and the bundled
+examples. See `regression/run_all.sh`.
+
+- **`distance`** — byte-identical across all matrix types × missing handlers.
+- **`MSTree`** — byte-identical (symmetric); topologically identical (asymmetric).
+- **`MSTreeV2`** — byte-identical on nearly all inputs; a rare single branch can
+  differ when the `contemporary` likelihood test lands on a floating-point
+  boundary (log/sqrt ULP differences between Rust libm and NumPy).
+- **`NJ` / `RapidNJ` / `ninja`** — identical topology (RF = 0). Branch lengths
+  use canonical Saitou-Nei NJ; FastME assigns balanced-ME edge lengths, so the
+  lengths differ while the tree is the same.
+
+Aggregate: **92 byte-identical, 23 topology-identical (RF=0), 1 NJ tie-break
+difference**, thread-count invariant.
+
+Two upstream bugs are fixed simply by porting cleanly:
+- `--wgMLST` is dead code in the reference (a local variable never propagates),
+  so it silently does nothing; we preserve that behaviour for parity but also
+  implement the intended `asymmetric_wgMLST` matrix.
+- FASTA input crashes the reference CLI (`del part` on an unbound variable);
+  grapetree-rs parses aligned FASTA correctly.
+
+## Performance
+
+Native Chu-Liu/Edmonds (lazy skew heap + rollback union-find, O(E log V)) and a
+rayon-parallel distance kernel. Faster than the Python + compiled-binary pipeline
+at every size tested (see `BENCHMARKS.md`):
+
+| N | `distance` | `MSTreeV2` |
+|---|-----------|-----------|
+| 300 | 4.9× | 6.9× |
+| 1000 | 2.6× | 2.2× (47s → 1.4s vs the old naive Edmonds) |
+| 2000 | 2.9× | 1.3× |
+
+## Regression suite
+
+```bash
+# needs a Python 3.11 env with numpy/networkx/numba/ete3 (ete3 needs <3.13)
+GT_ORIG=/path/to/GrapeTree bash regression/run_all.sh
+```
+
+Generates deterministic synthetic inputs (`gen_synth.py`), runs every method ×
+parameter through both implementations, and scores byte-identity or topological
+equivalence (`compare_trees.py`).
+
+## Layout
+
+```
+src/parse.rs      profile/FASTA reader + nonredundant encoding
+src/distance.rs   symmetric/asymmetric/wgMLST/blockwise matrices (rayon)
+src/heuristic.rs  harmonic / eBurst weights
+src/mst.rs        Kruskal MST + get_shortcut + symmetric_link
+src/edmonds.rs    optimum branching (Chu-Liu/Edmonds)
+src/recraft.rs    branch_recraft + contemporary
+src/nj.rs         canonical Neighbor-Joining
+src/tree.rs       tree assembly + NEWICK writer
+src/cli.rs        argument parsing
+```
+
+See `DECISIONS.md` for the full design rationale and a dated build log.
+
+## Credits
+
+All credit for GrapeTree — the algorithms (MSTreeV2, branch recrafting, the
+contemporaneity test), the science, and the original implementation — belongs to
+its authors. This project is only a Rust reimplementation of their work.
+
+- **GrapeTree** by **Zhemin Zhou**, Nabil-Fareed Alikhan, Martin J. Sergeant,
+  Nina Luhmann, Cátia Vaz, Alexandre P. Francisco, João André Carriço and
+  **Mark Achtman** — EnteroBase / achtman-lab.
+- Paper: Zhou Z. *et al.* "GrapeTree: visualization of core genomic relationships
+  among 100,000 bacterial pathogens." *Genome Research* 28:1395–1404 (2018).
+  doi:10.1101/gr.232397.117
+- Upstream: <https://github.com/achtman-lab/GrapeTree>
+
+This port (`grapetree-rs`) is developed and maintained by the **GenPat Team**
+(IZSAM). It is not affiliated with or endorsed by the original GrapeTree authors.
+
+## Licence
+
+GPL-3.0-or-later, matching upstream GrapeTree.

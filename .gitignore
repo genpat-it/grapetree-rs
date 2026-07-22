@@ -1,0 +1,8 @@
+/target
+Cargo.lock
+# stray temp files (GrapeTree's oracle writes tmp*/*.npy into the cwd)
+tmp*
+*.npy
+*.list
+*.nwk
+_r[dt]/
