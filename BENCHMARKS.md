@@ -68,14 +68,26 @@ reference:
 ### MSTreeV2 on realistic clonal data — head to head (N=10000)
 
 Single founder, isolates 1–4 alleles apart (a clonal expansion, like surveillance
-cgMLST); 40 threads:
+cgMLST). **Fair setup:** idle host, identical thread count, best-of-3, Python
+warm (numba JIT cached after the first run). In both tools only the distance step
+is parallel; Edmonds/recraft are serial.
 
-| tool                | wall    | peak RAM | tree            |
-|---------------------|---------|----------|-----------------|
-| GrapeTree (Python)  | 30.8 s  | 2.1 GB   | —               |
-| **grapetree-rs**    | **9.4 s** | **1.7 GB** | RF≈0.0002 vs oracle, total length 24807 vs 24808 |
+| tool               | 16 threads | 40 threads |
+|--------------------|-----------:|-----------:|
+| GrapeTree (Python) | 38.2 s     | 30.8 s     |
+| **grapetree-rs**   | **10.6 s** | **8.0 s**  |
+| speedup            | **3.6×**   | **3.9×**   |
 
-≈ **3.3× faster**, less memory, topologically equivalent. On the same-size but
-adversarial "several maximally-distant clusters" input, neither tool finishes
-quickly (shortcuts never fire) — so scalability comes from the data being clonal,
-which is the regime GrapeTree targets.
+Trees are equivalent (RF ≈ 0.0002 vs the oracle; total length 24807 vs 24808).
+Peak RAM ≈ 1.7 GB (rs) vs ≈ 2.1 GB (Python).
+
+Caveats, for honesty: Python carries structural overheads a shared-memory Rust
+build avoids — multiprocessing fork plus `np.save`/`np.load` disk round-trips to
+ship the distance matrix between workers; grapetree-rs uses rayon in-process.
+That is a real architectural advantage, not a rigged comparison. A single
+dataset/seed was used; the ratio is stable but a publication claim would want
+several seeds and sizes.
+
+On the same-size but adversarial "several maximally-distant clusters" input,
+neither tool finishes quickly (shortcuts never fire) — so scalability comes from
+the data being clonal, which is the regime GrapeTree targets.
