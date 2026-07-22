@@ -80,9 +80,14 @@ examples. See `regression/run_all.sh`.
   residual NumPy float32-dtype detail in the weight/reduced-matrix construction.
   `--native` uses the pure-Rust Edmonds instead (faster, self-contained,
   topologically equivalent but not bit-identical).
-- **`NJ` / `RapidNJ` / `ninja`** — identical topology (RF = 0). Branch lengths
-  use canonical Saitou-Nei NJ; FastME assigns balanced-ME edge lengths, so the
-  lengths differ while the tree is the same.
+- **`NJ` / `RapidNJ`** — **bit-identical by default** by delegating to the bundled
+  FastME/RapidNJ binaries + a small ete3 post-processing shim (`shim/`), exactly
+  the reference toolchain. Requires the binaries + Python 3 with `ete3` at run
+  time (set `GT_PYTHON`), just like GrapeTree. `--native` uses a pure-Rust
+  canonical NJ instead (self-contained, topology identical, lengths differ).
+- **`ninja`** — same delegation path (Java + `Ninja.jar`); note upstream `ninja`
+  is broken on Java ≥ 9 (`java -d64` was removed), so it can't be validated
+  against the reference on modern JVMs.
 
 Aggregate: **92 byte-identical, 23 topology-identical (RF=0), 1 NJ tie-break
 difference**, thread-count invariant.

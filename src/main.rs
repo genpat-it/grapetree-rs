@@ -9,21 +9,15 @@ use grapetree::recraft;
 use grapetree::tree::Tree;
 use std::io::Read;
 
-/// Locate the bundled `edmonds` binary: `$GT_EDMONDS`, then `binaries/edmonds-linux`
-/// beside the executable (up to a few levels up), then the source tree.
-fn resolve_edmonds() -> Option<std::path::PathBuf> {
+/// Locate a bundled file under `binaries/` or `shim/` (next to the executable,
+/// up to a few levels up, or in the source tree).
+fn resolve_bundled(subdir: &str, name: &str) -> Option<std::path::PathBuf> {
     use std::path::PathBuf;
-    if let Ok(p) = std::env::var("GT_EDMONDS") {
-        let pb = PathBuf::from(p);
-        if pb.is_file() {
-            return Some(pb);
-        }
-    }
     if let Ok(exe) = std::env::current_exe() {
         let mut dir = exe.parent().map(|p| p.to_path_buf());
         for _ in 0..4 {
             if let Some(d) = &dir {
-                let pb = d.join("binaries").join("edmonds-linux");
+                let pb = d.join(subdir).join(name);
                 if pb.is_file() {
                     return Some(pb);
                 }
@@ -31,11 +25,56 @@ fn resolve_edmonds() -> Option<std::path::PathBuf> {
             }
         }
     }
-    let pb = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries/edmonds-linux");
-    if pb.is_file() {
-        return Some(pb);
+    let pb = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join(subdir)
+        .join(name);
+    pb.is_file().then_some(pb)
+}
+
+fn resolve_edmonds() -> Option<std::path::PathBuf> {
+    if let Ok(p) = std::env::var("GT_EDMONDS") {
+        let pb = std::path::PathBuf::from(p);
+        if pb.is_file() {
+            return Some(pb);
+        }
     }
-    None
+    resolve_bundled("binaries", "edmonds-linux")
+}
+
+/// Full bit-identical NJ pipeline via the bundled binaries + ete3 shim.
+fn nj_exact_pipeline(
+    parsed: &parse::Parsed,
+    dm: &distance::DistMatrix,
+    method: &str,
+) -> Option<String> {
+    use grapetree::nj_exact;
+    let shim = resolve_bundled("shim", "nj_postprocess.py")?;
+    let python = std::env::var("GT_PYTHON").unwrap_or_else(|_| "python3".to_string());
+    let n_loci = parsed.n_cols as f64;
+    let (raw, scale) = match method {
+        "NJ" => (
+            nj_exact::run_fastme(dm, &resolve_bundled("binaries", "fastme-2.1.5-linux64")?)?,
+            1.0,
+        ),
+        "RapidNJ" => (
+            nj_exact::run_rapidnj(dm, &resolve_bundled("binaries", "rapidnj")?)?,
+            1.0,
+        ),
+        "ninja" => {
+            let java = std::env::var("GT_JAVA").unwrap_or_else(|_| "java".to_string());
+            (
+                nj_exact::run_ninja(
+                    dm,
+                    &resolve_bundled("binaries", "Ninja.jar")?,
+                    &java,
+                    n_loci,
+                )?,
+                n_loci,
+            )
+        }
+        _ => return None,
+    };
+    nj_exact::neighbor_joining_exact(parsed, &raw, &shim, &python, scale)
 }
 
 /// Port of `estimate_Consumption` (Linux coefficients). `method`/`matrix` are
@@ -182,16 +221,30 @@ fn main() -> Result<()> {
             println!("{}", tree.to_newick());
         }
         "NJ" | "RapidNJ" | "ninja" => {
-            // The reference builds all NJ variants on the symmetric matrix via
-            // FastME/RapidNJ/Ninja; we use a native canonical NJ instead.
             let dm = distance::compute(
                 &parsed,
                 MatrixKind::Symmetric,
                 params.handle_missing,
                 params.block_penalty,
             );
-            let nwk = grapetree::nj::neighbor_joining(&parsed, &dm, &parsed.names);
-            println!("{nwk}");
+            // Bit-identical by default: delegate the tree to the bundled
+            // FastME/RapidNJ/Ninja binary + the ete3 post-processing shim (as
+            // upstream does). `--native` uses the pure-Rust canonical NJ.
+            let exact = if params.native {
+                None
+            } else {
+                nj_exact_pipeline(&parsed, &dm, &params.method)
+            };
+            match exact {
+                Some(nwk) => println!("{}", nwk.trim_end()),
+                None => {
+                    if !params.native {
+                        eprintln!("[grapetree-rs] NJ external toolchain unavailable; using native canonical NJ (topologically equivalent, not bit-identical). Pass --native to silence.");
+                    }
+                    let nwk = grapetree::nj::neighbor_joining(&parsed, &dm, &parsed.names);
+                    println!("{nwk}");
+                }
+            }
         }
         other => {
             eprintln!(

@@ -12,6 +12,7 @@ pub mod edmonds;
 pub mod heuristic;
 pub mod mst;
 pub mod nj;
+pub mod nj_exact;
 pub mod parse;
 pub mod recraft;
 pub mod tree;
