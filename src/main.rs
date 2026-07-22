@@ -77,6 +77,139 @@ fn nj_exact_pipeline(
     nj_exact::neighbor_joining_exact(parsed, &raw, &shim, &python, scale)
 }
 
+/// Bit-identical harmonic weights via the NumPy shim. GrapeTree's harmonic
+/// centrality `N/sum(1/(dist+0.1))` is summed by NumPy in float32 with a SIMD
+/// (AVX) reduction whose addition order — and thus the last ULP — is not
+/// portably reproducible in Rust; at scale that flips near-tied ranks and ~0.8%
+/// of the tree. So (like `edmonds`/ete3) we delegate this one step to NumPy.
+/// Returns `None` if the shim/python is unavailable (caller falls back to the
+/// pure-Rust harmonic, which is exact for small/mid inputs).
+fn harmonic_weights_exact(dm: &distance::DistMatrix, n_str: &[usize]) -> Option<Vec<f64>> {
+    let shim = resolve_bundled("shim", "harmonic_weights.py")?;
+    let python = std::env::var("GT_PYTHON").unwrap_or_else(|_| "python3".to_string());
+    let n = dm.n;
+    let base = std::env::temp_dir().join(format!("gt_hw_{}", std::process::id()));
+    let dist_p = base.with_extension("dist.bin");
+    let nstr_p = base.with_extension("nstr.txt");
+    let out_p = base.with_extension("w.bin");
+    {
+        use std::io::Write;
+        let f = std::fs::File::create(&dist_p).ok()?;
+        let mut w = std::io::BufWriter::new(f);
+        // x86-64 is little-endian, so the f32 slice's memory is already the LE
+        // byte layout NumPy's `<f4` fromfile expects.
+        let bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(dm.data.as_ptr() as *const u8, dm.data.len() * 4) };
+        w.write_all(bytes).ok()?;
+        w.flush().ok()?;
+    }
+    let nstr_txt: String = n_str
+        .iter()
+        .map(|c| c.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&nstr_p, nstr_txt).ok()?;
+    let status = std::process::Command::new(&python)
+        .arg(&shim)
+        .arg(&dist_p)
+        .arg(n.to_string())
+        .arg(&nstr_p)
+        .arg(&out_p)
+        .status();
+    let _ = std::fs::remove_file(&dist_p);
+    let _ = std::fs::remove_file(&nstr_p);
+    if !status.ok()?.success() {
+        let _ = std::fs::remove_file(&out_p);
+        return None;
+    }
+    let bytes = std::fs::read(&out_p).ok()?;
+    let _ = std::fs::remove_file(&out_p);
+    if bytes.len() != n * 4 {
+        return None;
+    }
+    let mut weights = Vec::with_capacity(n);
+    for i in 0..n {
+        let b = [
+            bytes[i * 4],
+            bytes[i * 4 + 1],
+            bytes[i * 4 + 2],
+            bytes[i * 4 + 3],
+        ];
+        weights.push(f32::from_le_bytes(b) as f64);
+    }
+    Some(weights)
+}
+
+/// Bit-identical `branch_recraft` via the NumPy shim. The `contemporary` test
+/// uses `np.log`, whose float64 result is NumPy's own (non-correctly-rounded,
+/// CPU-SIMD-dispatched) polynomial — not portably reproducible against Rust's
+/// libm `ln`. So (like `edmonds`/weights) we run the recraft in NumPy. Returns
+/// `None` if the shim/python is unavailable (caller falls back to Rust recraft).
+fn branch_recraft_exact(
+    net: &[(usize, usize, f64)],
+    dm: &distance::DistMatrix,
+    weight: &[f64],
+    n_loci: usize,
+) -> Option<Vec<(usize, usize, f64)>> {
+    let shim = resolve_bundled("shim", "recraft.py")?;
+    let python = std::env::var("GT_PYTHON").unwrap_or_else(|_| "python3".to_string());
+    let n = dm.n;
+    let base = std::env::temp_dir().join(format!("gt_rc_{}", std::process::id()));
+    let net_p = base.with_extension("net.tsv");
+    let dist_p = base.with_extension("dist.bin");
+    let w_p = base.with_extension("w.bin");
+    let out_p = base.with_extension("out.tsv");
+    {
+        use std::io::Write;
+        let mut s = String::with_capacity(net.len() * 16);
+        for &(a, b, d) in net {
+            s.push_str(&format!("{a}\t{b}\t{d}\n"));
+        }
+        std::fs::write(&net_p, s).ok()?;
+        let f = std::fs::File::create(&dist_p).ok()?;
+        let mut w = std::io::BufWriter::new(f);
+        let bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(dm.data.as_ptr() as *const u8, dm.data.len() * 4) };
+        w.write_all(bytes).ok()?;
+        w.flush().ok()?;
+        let mut wb = Vec::with_capacity(weight.len() * 4);
+        for &x in weight {
+            wb.extend_from_slice(&(x as f32).to_le_bytes());
+        }
+        std::fs::write(&w_p, &wb).ok()?;
+    }
+    let status = std::process::Command::new(&python)
+        .arg(&shim)
+        .arg(&net_p)
+        .arg(&dist_p)
+        .arg(n.to_string())
+        .arg(&w_p)
+        .arg(n_loci.to_string())
+        .arg(&out_p)
+        .status();
+    for f in [&net_p, &dist_p, &w_p] {
+        let _ = std::fs::remove_file(f);
+    }
+    if !status.ok()?.success() {
+        let _ = std::fs::remove_file(&out_p);
+        return None;
+    }
+    let text = std::fs::read_to_string(&out_p).ok()?;
+    let _ = std::fs::remove_file(&out_p);
+    let mut out = Vec::with_capacity(net.len());
+    for line in text.lines() {
+        let p: Vec<&str> = line.split_whitespace().collect();
+        if p.len() >= 3 {
+            out.push((
+                p[0].parse::<usize>().ok()?,
+                p[1].parse::<usize>().ok()?,
+                p[2].parse::<f64>().ok()?,
+            ));
+        }
+    }
+    Some(out)
+}
+
 /// Port of `estimate_Consumption` (Linux coefficients). `method`/`matrix` are
 /// the already-resolved values. Returns `(seconds, bytes)`.
 fn estimate_consumption(
@@ -190,7 +323,20 @@ fn main() -> Result<()> {
             let t1 = std::time::Instant::now();
             let n_str = parsed.n_str();
             let heur = Heuristic::parse(&params.heuristic);
-            let weight = heuristic::weights(&dm, &n_str, heur);
+            // Bit-identical default mode delegates the harmonic weights to NumPy
+            // (its float32 SIMD sum is not portably reproducible — see
+            // `harmonic_weights_exact`). `--native` keeps the pure-Rust harmonic.
+            let weight = if !params.native && heur == Heuristic::Harmonic {
+                match harmonic_weights_exact(&dm, &n_str) {
+                    Some(w) => w,
+                    None => {
+                        eprintln!("[grapetree-rs] harmonic weight shim unavailable; using native harmonic (bit-identical for small/mid inputs, may differ by ~1 ULP at 10k+ scale). Set GT_PYTHON or pass --native to silence.");
+                        heuristic::weights(&dm, &n_str, heur)
+                    }
+                }
+            } else {
+                heuristic::weights(&dm, &n_str, heur)
+            };
             if timing {
                 eprintln!("[timing] weights: {:.2}s", t1.elapsed().as_secs_f64());
             }
@@ -220,8 +366,21 @@ fn main() -> Result<()> {
                         eprintln!("[timing] arborescence: {:.2}s", t2.elapsed().as_secs_f64());
                     }
                     let tr = std::time::Instant::now();
+                    // Bit-identical default mode runs the recraft in NumPy (its
+                    // `contemporary` test uses `np.log`, not portably matchable in
+                    // Rust). `--native` uses the pure-Rust recraft.
                     let net = if params.branch_recraft {
-                        recraft::branch_recraft(net, &dm, &weight, parsed.n_cols as f64)
+                        let shimmed = if !params.native {
+                            branch_recraft_exact(&net, &dm, &weight, parsed.n_cols)
+                        } else {
+                            None
+                        };
+                        match shimmed {
+                            Some(r) => r,
+                            None => {
+                                recraft::branch_recraft(net, &dm, &weight, parsed.n_cols as f64)
+                            }
+                        }
                     } else {
                         net
                     };

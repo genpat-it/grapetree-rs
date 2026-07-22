@@ -6,3 +6,6 @@ tmp*
 *.list
 *.nwk
 _r[dt]/
+
+# Private internal analysis — never publish (not a public critique of upstream)
+WEAKNESS.md

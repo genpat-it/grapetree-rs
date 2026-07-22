@@ -98,13 +98,16 @@ examples. See `regression/run_all.sh`.
 
 - **`distance`** — byte-identical across all matrix types × missing handlers.
 - **`MSTree`** — byte-identical (symmetric); topologically identical (asymmetric).
-- **`MSTreeV2`** — **bit-identical by default**: the minimum spanning
-  arborescence is delegated to the bundled reference `edmonds` binary (as
-  upstream does), then recrafted/serialised in Rust. A rare synthetic case can
-  still differ only in NEWICK child ordering (RF=0, identical length) from a
-  residual NumPy float32-dtype detail in the weight/reduced-matrix construction.
-  `--native` uses the pure-Rust Edmonds instead (faster, self-contained,
-  topologically equivalent but not bit-identical).
+- **`MSTreeV2`** — **byte-identical by default**, verified on a real 63,005-sample
+  *Campylobacter* cgMLST set (same md5 as upstream). The arborescence is delegated
+  to the bundled `edmonds` binary; the two numerical steps that are *not* portably
+  reproducible in Rust are delegated to NumPy (as upstream computes them), via tiny
+  shims — the harmonic weights (`shim/harmonic_weights.py`; NumPy's float32 SIMD
+  `sum`) and `branch_recraft` (`shim/recraft.py`; NumPy's `np.log` in the
+  `contemporary` test). Everything else is byte-identical Rust. Needs Python 3 +
+  NumPy at run time (set `GT_PYTHON`); without it, it falls back to the pure-Rust
+  path with a warning. `--native` forces the pure-Rust path: self-contained and
+  fast, topologically ~99% but not byte-identical (see below).
 - **`NJ` / `RapidNJ`** — **bit-identical by default** by delegating to the bundled
   FastME/RapidNJ binaries + a small ete3 post-processing shim (`shim/`), exactly
   the reference toolchain. Requires the binaries + Python 3 with `ete3` at run
@@ -162,11 +165,14 @@ src/parse.rs      profile/FASTA reader + nonredundant encoding
 src/distance.rs   symmetric/asymmetric/wgMLST/blockwise matrices (rayon)
 src/heuristic.rs  harmonic / eBurst weights
 src/mst.rs        Kruskal MST + get_shortcut + symmetric_link
-src/edmonds.rs    optimum branching (Chu-Liu/Edmonds)
-src/recraft.rs    branch_recraft + contemporary
+src/edmonds.rs    optimum branching (Chu-Liu/Edmonds): skew-heap + dense O(V)-mem
+src/recraft.rs    branch_recraft + contemporary (native, pure Rust)
 src/nj.rs         canonical Neighbor-Joining
 src/tree.rs       tree assembly + NEWICK writer
 src/cli.rs        argument parsing
+shim/harmonic_weights.py  NumPy harmonic weights   (default-mode bit-identity)
+shim/recraft.py           NumPy branch_recraft     (default-mode bit-identity)
+shim/nj_postprocess.py    ete3 NJ post-processing  (NJ-family bit-identity)
 ```
 
 See `DECISIONS.md` for the full design rationale and a dated build log.

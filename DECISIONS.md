@@ -241,3 +241,31 @@ gradients, blockwise-ordered loci). Compare:
   `(weight, dist, node_id)` is a *total* order (node id is unique), so the three
   smallest are unambiguous and identical to `sorted(...)[:3]`. Byte-identical on
   all 7 regression datasets; recraft at 63k now 1.9 s.
+- 2026-07-22: **Full bit-identity at 63k — the two non-portable numerics, delegated
+  to NumPy.** MSTreeV2's output is deterministic but *not portable*: it depends on
+  two floating-point pieces that differ across CPUs/NumPy builds. We isolated both
+  by reproducing every algorithmic stage in Rust and diffing byte-for-byte against
+  upstream on a real 63k *Campylobacter* set:
+  1. **Harmonic centrality** `N/Σ 1/(dist+0.1)` — NumPy sums it in float32 with a
+     SIMD (AVX) reduction whose add-order (hence last ULP) is CPU/build-dependent.
+     Our scalar pairwise matches NumPy on *some* rows but not ~half of 57k-element
+     rows. → `shim/harmonic_weights.py` (NumPy computes the weights).
+  2. **`branch_recraft`'s `contemporary` test** — uses `np.log`, which is NumPy's
+     own polynomial (correctly-rounded only ~79% of the time vs glibc's ~99.9%, and
+     SIMD-dispatched). Rust's libm `ln` differs, flipping `p1>=p2` at boundaries.
+     → `shim/recraft.py` (verbatim NumPy port of `_branch_recraft`/`contemporary`).
+  Plus two pure-Rust f32 fixes needed for the reduced matrix to match byte-for-byte:
+  `get_shortcut`'s `dist+weight` key computed in f32 (`GRAPETREE-COMPAT[shortcut-f32]`),
+  and the reduced-matrix `+0.999995` offset added in f32 (`[edmonds-reduced-f32]`).
+  **Result: default mode is byte-identical (same md5) to upstream GrapeTree on the
+  full 63,005-sample set** (12m47s / 133 GB, vs upstream 18m48s / 133 GB — faster
+  because our distance kernel is Rust). `--native` stays pure-Rust (3m28s / 46 GB,
+  ~99.2%). Requires Python+NumPy at runtime for default mode (set `GT_PYTHON`), the
+  same class of dependency GrapeTree already has.
+
+  Deeper insight (see private WEAKNESS.md): GrapeTree uses floating-point almost
+  entirely to *decide* (argmin, sort order, `p1>=p2`) rather than to *report a
+  value*. A 1-ULP error, harmless in a value, becomes a coin-flip at a decision
+  boundary and jumps the discrete outcome (a leaf's parent) by up to 747 alleles.
+  This is the "robust geometric predicates" problem; GrapeTree lacks the exact/
+  canonical tie-breaking that would make its combinatorial output reproducible.

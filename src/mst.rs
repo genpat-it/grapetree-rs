@@ -126,7 +126,12 @@ fn get_shortcut(dist: &DistMatrix, weight: &[f64]) -> Vec<(usize, usize)> {
                 continue;
             }
             if weight[s] < weight[t] && (dist.get(s, t) as f64) < cutoff + 1.0 {
-                let key = dist.get(s, t) as f64 + weight[s];
+                // GRAPETREE-COMPAT[shortcut-f32]: the reference sorts by
+                // `dist + weight[src]` computed in float32 (dist and the harmonic
+                // weight are both float32). Doing this add in f64 would break
+                // near-ties differently and pick a different survivor set. Add in
+                // f32 to match.
+                let key = (dist.get(s, t) + weight[s] as f32) as f64;
                 match best {
                     Some((bk, _)) if bk <= key => {}
                     _ => best = Some((key, s)),
@@ -275,13 +280,20 @@ pub fn asymmetric_network_exact(
                 // operands float32), then writes `value + (1 - 0.000005)` at
                 // %.5f. We must do the round+weight add in f32 too, else a ~1e-8
                 // difference flips the 5th decimal and the binary's tie-breaks.
-                let v = if i == j {
-                    0.0f64
+                // GRAPETREE-COMPAT[edmonds-reduced-f32]: the reference row is a
+                // float32 array `np.round(dmod)+weight2`, and `d + (1.-0.000005)`
+                // adds the offset in float32 too (numpy: f32 array + python float
+                // → f32). The constant is `1.-0.000005` evaluated in f64 then cast
+                // to f32 (numpy casts the scalar when adding). Doing the offset add
+                // in f64 flips the 5th decimal vs the reference.
+                const OFF: f32 = (1.0_f64 - 0.000005_f64) as f32;
+                let base: f32 = if i == j {
+                    0.0
                 } else {
-                    ((np_round(d[kept[i] * n + kept[j]] as f64) as f32) + (weight[kept[i]] as f32))
-                        as f64
+                    (np_round(d[kept[i] * n + kept[j]] as f64) as f32) + (weight[kept[i]] as f32)
                 };
-                buf.push_str(&format!("{:.5}", v + (1.0 - 0.000005)));
+                let dd = base + OFF;
+                buf.push_str(&format!("{:.5}", dd as f64));
             }
             buf.push('\n');
         }
