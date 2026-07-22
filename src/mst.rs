@@ -195,6 +195,111 @@ pub fn asymmetric_network(dist: &DistMatrix, weight: &[f64]) -> Vec<(usize, usiz
     edges
 }
 
+/// Round half to even (NumPy's `np.round` convention), so the reduced-matrix
+/// text we hand to the `edmonds` binary matches the reference byte-for-byte.
+fn np_round(x: f64) -> f64 {
+    let f = x.floor();
+    let diff = x - f;
+    if diff < 0.5 {
+        f
+    } else if diff > 0.5 {
+        f + 1.0
+    } else if (f as i64) % 2 == 0 {
+        f
+    } else {
+        f + 1.0
+    }
+}
+
+/// Exact `_asymmetric`: identical to [`asymmetric_network`] but the minimum
+/// spanning arborescence is delegated to the reference `edmonds` binary, so the
+/// per-edge branch lengths (and hence the order-sensitive branch recrafting)
+/// are **bit-identical** to upstream GrapeTree — see BUGS.md#3 / COMPAT.md
+/// (`edmonds-brlen-roundtrip`). Falls back to `None` if the binary can't run.
+pub fn asymmetric_network_exact(
+    dist: &DistMatrix,
+    weight: &[f64],
+    edmonds_path: &std::path::Path,
+) -> Option<Vec<(usize, usize, f64)>> {
+    use std::process::Command;
+    let n = dist.n;
+    let shortcuts = get_shortcut(dist, weight);
+
+    // row-min collapse of shortcut targets into their sources (same as native).
+    let mut d: Vec<f32> = dist.data.clone();
+    for &(s, t) in &shortcuts {
+        for k in 0..n {
+            if d[s * n + k] > d[t * n + k] {
+                d[s * n + k] = d[t * n + k];
+            }
+        }
+    }
+    let mut removed = vec![false; n];
+    for &(_, t) in &shortcuts {
+        removed[t] = true;
+    }
+    let kept: Vec<usize> = (0..n).filter(|&i| !removed[i]).collect();
+    let m = kept.len();
+
+    let mut edges: Vec<(usize, usize, f64)> = Vec::new();
+    if m >= 2 {
+        // reduced cost matrix = round(dmod)+weight[src], diagonal 0, written as
+        // "%.5f" of (value + 0.999995) — the exact reference file format.
+        let mut buf = String::with_capacity(m * m * 8);
+        for i in 0..m {
+            for j in 0..m {
+                if j > 0 {
+                    buf.push('\t');
+                }
+                // GRAPETREE-COMPAT[edmonds-reduced-f32]: the reference builds the
+                // reduced matrix as `np.round(dmod) + weight2` in float32 (both
+                // operands float32), then writes `value + (1 - 0.000005)` at
+                // %.5f. We must do the round+weight add in f32 too, else a ~1e-8
+                // difference flips the 5th decimal and the binary's tie-breaks.
+                let v = if i == j {
+                    0.0f64
+                } else {
+                    ((np_round(d[kept[i] * n + kept[j]] as f64) as f32) + (weight[kept[i]] as f32))
+                        as f64
+                };
+                buf.push_str(&format!("{:.5}", v + (1.0 - 0.000005)));
+            }
+            buf.push('\n');
+        }
+        let path = std::env::temp_dir().join(format!("gt_edmonds_{}.list", std::process::id()));
+        std::fs::write(&path, &buf).ok()?;
+        let out = Command::new(edmonds_path).arg(&path).output();
+        let _ = std::fs::remove_file(&path);
+        let out = out.ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let mut any = false;
+        for line in stdout.lines() {
+            let p: Vec<&str> = line.split_whitespace().collect();
+            if p.len() < 3 {
+                continue;
+            }
+            // reference parses the row as float then `.astype(int)` (truncates),
+            // then subtracts 1 from the weight column.
+            let s = p[0].parse::<f64>().ok()?.trunc() as usize;
+            let t = p[1].parse::<f64>().ok()?.trunc() as usize;
+            let w = p[2].parse::<f64>().ok()?.trunc() - 1.0;
+            edges.push((kept[s], kept[t], w));
+            any = true;
+        }
+        if !any {
+            return None;
+        }
+    }
+    // shortcut edges: brlen = int(dist_orig[s][t] + weight[s])
+    for &(s, t) in &shortcuts {
+        edges.push((s, t, (dist.get(s, t) as f64 + weight[s]).trunc()));
+    }
+    Some(edges)
+}
+
 /// Per-row presence used by `symmetric_link`, matching the reference.
 fn presence_matrix(p: &Parsed, hm: HandleMissing) -> PresenceMask {
     match hm {

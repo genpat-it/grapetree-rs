@@ -50,6 +50,12 @@ pub struct Args {
     /// Penalty for a different locus led by another difference (blockwise only).
     #[arg(short = 'b', long = "block_penalty", default_value_t = 0.01)]
     pub block_penalty: f64,
+
+    /// Use the pure-Rust native arborescence/NJ instead of the bundled reference
+    /// binaries. Faster and self-contained, but only topologically equivalent
+    /// (RF=0), not bit-identical to upstream GrapeTree. Default: bit-identical.
+    #[arg(long = "native", default_value_t = false)]
+    pub native: bool,
 }
 
 /// Fully resolved run parameters after applying the MSTreeV2/blockwise aliases.
@@ -65,6 +71,7 @@ pub struct Params {
     pub n_proc: usize,
     pub check_env: bool,
     pub block_penalty: f64,
+    pub native: bool,
 }
 
 impl Args {
@@ -106,6 +113,7 @@ impl Args {
             n_proc: self.n_proc,
             check_env: self.check_env,
             block_penalty: self.block_penalty,
+            native: self.native,
         }
     }
 }

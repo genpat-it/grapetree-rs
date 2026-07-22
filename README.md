@@ -73,9 +73,13 @@ examples. See `regression/run_all.sh`.
 
 - **`distance`** — byte-identical across all matrix types × missing handlers.
 - **`MSTree`** — byte-identical (symmetric); topologically identical (asymmetric).
-- **`MSTreeV2`** — byte-identical on nearly all inputs; a rare single branch can
-  differ when the `contemporary` likelihood test lands on a floating-point
-  boundary (log/sqrt ULP differences between Rust libm and NumPy).
+- **`MSTreeV2`** — **bit-identical by default**: the minimum spanning
+  arborescence is delegated to the bundled reference `edmonds` binary (as
+  upstream does), then recrafted/serialised in Rust. A rare synthetic case can
+  still differ only in NEWICK child ordering (RF=0, identical length) from a
+  residual NumPy float32-dtype detail in the weight/reduced-matrix construction.
+  `--native` uses the pure-Rust Edmonds instead (faster, self-contained,
+  topologically equivalent but not bit-identical).
 - **`NJ` / `RapidNJ` / `ninja`** — identical topology (RF = 0). Branch lengths
   use canonical Saitou-Nei NJ; FastME assigns balanced-ME edge lengths, so the
   lengths differ while the tree is the same.

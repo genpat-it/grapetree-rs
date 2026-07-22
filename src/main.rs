@@ -9,6 +9,35 @@ use grapetree::recraft;
 use grapetree::tree::Tree;
 use std::io::Read;
 
+/// Locate the bundled `edmonds` binary: `$GT_EDMONDS`, then `binaries/edmonds-linux`
+/// beside the executable (up to a few levels up), then the source tree.
+fn resolve_edmonds() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    if let Ok(p) = std::env::var("GT_EDMONDS") {
+        let pb = PathBuf::from(p);
+        if pb.is_file() {
+            return Some(pb);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.parent().map(|p| p.to_path_buf());
+        for _ in 0..4 {
+            if let Some(d) = &dir {
+                let pb = d.join("binaries").join("edmonds-linux");
+                if pb.is_file() {
+                    return Some(pb);
+                }
+                dir = d.parent().map(|p| p.to_path_buf());
+            }
+        }
+    }
+    let pb = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries/edmonds-linux");
+    if pb.is_file() {
+        return Some(pb);
+    }
+    None
+}
+
 /// Port of `estimate_Consumption` (Linux coefficients). `method`/`matrix` are
 /// the already-resolved values. Returns `(seconds, bytes)`.
 fn estimate_consumption(
@@ -120,7 +149,24 @@ fn main() -> Result<()> {
             let edges: Vec<(usize, usize)> = match kind {
                 MatrixKind::Symmetric | MatrixKind::Blockwise => mst::symmetric_mst(&dm, &weight),
                 MatrixKind::Asymmetric => {
-                    let net = mst::asymmetric_network(&dm, &weight);
+                    // Bit-identical by default: delegate the arborescence to the
+                    // bundled `edmonds` binary (as upstream does). `--native`
+                    // uses the pure-Rust Edmonds (equivalent, not bit-identical).
+                    let net = if params.native {
+                        mst::asymmetric_network(&dm, &weight)
+                    } else {
+                        match resolve_edmonds() {
+                            Some(path) => mst::asymmetric_network_exact(&dm, &weight, &path)
+                                .unwrap_or_else(|| {
+                                    eprintln!("[grapetree-rs] edmonds binary failed; falling back to native (equivalent, not bit-identical)");
+                                    mst::asymmetric_network(&dm, &weight)
+                                }),
+                            None => {
+                                eprintln!("[grapetree-rs] edmonds binary not found; using native (equivalent, not bit-identical). Set GT_EDMONDS or pass --native to silence.");
+                                mst::asymmetric_network(&dm, &weight)
+                            }
+                        }
+                    };
                     let net = if params.branch_recraft {
                         recraft::branch_recraft(net, &dm, &weight, parsed.n_cols as f64)
                     } else {

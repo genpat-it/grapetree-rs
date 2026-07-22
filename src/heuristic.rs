@@ -64,7 +64,12 @@ fn harmonic(m: &DistMatrix, n_str: &[usize]) -> Vec<f64> {
     let order = stable_argsort(n, |i| vec![h[i], -(n_str[i] as f64)]);
     let mut w = vec![0f64; n];
     for (rank, &node) in order.iter().enumerate() {
-        w[node] = rank as f64 / nf;
+        // GRAPETREE-COMPAT[harmonic-f32]: the reference stores `rank/N` as
+        // float32 (numpy keeps the harmonic weights in float32), so we round the
+        // rank/N through f32. The ~3e-8 difference vs f64 perturbs the reduced
+        // arborescence matrix and flips edmonds tie-breaks — required for
+        // bit-identity. See COMPAT.md.
+        w[node] = (rank as f32 / nf as f32) as f64;
     }
     w
 }
@@ -141,7 +146,11 @@ mod tests {
             &[2.006, 3.004, 4.002, 5.0, 0.0],
         ]);
         let w = weights(&m, &[1, 3, 1, 2, 1], Heuristic::Harmonic);
-        assert_eq!(w, vec![0.4, 0.0, 0.2, 0.6, 0.8]);
+        // weights are stored via f32 (reference parity), so compare approximately
+        let expect = [0.4, 0.0, 0.2, 0.6, 0.8];
+        for (a, b) in w.iter().zip(expect.iter()) {
+            assert!((a - b).abs() < 1e-6, "got {a}, want {b}");
+        }
     }
 
     #[test]
