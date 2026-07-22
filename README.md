@@ -155,6 +155,15 @@ its authors. This project is only a Rust reimplementation of their work.
 This port (`grapetree-rs`) is developed and maintained by the **GenPat Team**
 (IZSAM). It is not affiliated with or endorsed by the original GrapeTree authors.
 
+## AI disclosure
+
+This Rust port was carried out with the assistance of **Claude** (Anthropic,
+Claude Code). The AI helped with translating the reference algorithms, the
+optimisation work, and the byte-for-byte regression testing against upstream
+GrapeTree. All output was reviewed and validated by the maintainers, and the
+scientific credit for the original methods remains entirely with the GrapeTree
+authors (see *Credits*).
+
 ## Licence
 
 GPL-3.0-or-later, matching upstream GrapeTree.
