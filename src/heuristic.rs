@@ -49,15 +49,53 @@ pub fn weights(m: &DistMatrix, n_str: &[usize], heuristic: Heuristic) -> Vec<f64
     }
 }
 
+/// NumPy-compatible float32 pairwise summation (matches `np.sum`'s reduction
+/// order bit-for-bit: 8-accumulator base case for n≤128, else split at n/2
+/// rounded down to a multiple of 8). Required so the harmonic centrality ranks
+/// match the reference on near-ties. See COMPAT.md (`numpy-pairwise-f32`).
+fn pairwise_sum_f32(a: &[f32]) -> f32 {
+    let n = a.len();
+    if n < 8 {
+        let mut res = 0.0f32;
+        for &x in a {
+            res += x;
+        }
+        res
+    } else if n <= 128 {
+        let mut r = [a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]];
+        let mut i = 8;
+        while i + 8 <= n {
+            for k in 0..8 {
+                r[k] += a[i + k];
+            }
+            i += 8;
+        }
+        let mut res = ((r[0] + r[1]) + (r[2] + r[3])) + ((r[4] + r[5]) + (r[6] + r[7]));
+        while i < n {
+            res += a[i];
+            i += 1;
+        }
+        res
+    } else {
+        let mut n2 = n / 2;
+        n2 -= n2 % 8;
+        pairwise_sum_f32(&a[..n2]) + pairwise_sum_f32(&a[n2..])
+    }
+}
+
 /// `harmonic`: sort by (harmonic centrality asc, n_str desc); weight = rank/N.
+/// GRAPETREE-COMPAT[numpy-f32]: the whole centrality is computed in float32
+/// (dist is float32; `1/(d+0.1)`, the sum, and `N/sum` stay float32), matching
+/// numpy's dtype so ranks — and thus weights — are bit-identical.
 fn harmonic(m: &DistMatrix, n_str: &[usize]) -> Vec<f64> {
     let n = m.n;
     let nf = n as f64;
-    // h[i] = N / sum_j 1/(d[i,j] + 0.1)
+    let nf32 = n as f32;
+    // h[i] = N / sum_j 1/(d[i,j] + 0.1), all in float32 with numpy pairwise sum
     let h: Vec<f64> = (0..n)
         .map(|i| {
-            let s: f64 = (0..n).map(|j| 1.0 / (m.get(i, j) as f64 + 0.1)).sum();
-            nf / s
+            let row: Vec<f32> = (0..n).map(|j| 1.0f32 / (m.get(i, j) + 0.1f32)).collect();
+            (nf32 / pairwise_sum_f32(&row)) as f64
         })
         .collect();
     // lexsort keys = [-n_str, h] -> primary h asc, secondary -n_str asc.
