@@ -25,7 +25,7 @@ Turns an allelic profile (cgMLST / wgMLST / SNP) into a **NEWICK tree** or a
 
 - 🧬 **All methods** — `MSTreeV2`, `MSTree`, `NJ`, `RapidNJ`, `ninja`, `distance`, full CLI parity
 - 🎯 **Faithful** — byte-identical to the reference on most parameter combinations
-- 🦀 **Self-contained** — native Chu-Liu/Edmonds & Neighbor-Joining; no `edmonds`/FastME/RapidNJ/Ninja binaries
+- 🦀 **No `edmonds` binary** — MSTreeV2's arborescence is a byte-identical pure-Rust port of it (default); `--native` also replaces the NJ binaries
 - ⚡ **Fast** — rayon-parallel distance kernel; `distance` 2.9–13×, `MSTreeV2` 1.3–6.9× vs Python
 - ✅ **Tested** — per-parameter regression harness against the Python reference
 
@@ -99,15 +99,19 @@ examples. See `regression/run_all.sh`.
 - **`distance`** — byte-identical across all matrix types × missing handlers.
 - **`MSTree`** — byte-identical (symmetric); topologically identical (asymmetric).
 - **`MSTreeV2`** — **byte-identical by default**, verified on a real 63,005-sample
-  *Campylobacter* cgMLST set (same md5 as upstream). The arborescence is delegated
-  to the bundled `edmonds` binary; the two numerical steps that are *not* portably
-  reproducible in Rust are delegated to NumPy (as upstream computes them), via tiny
-  shims — the harmonic weights (`shim/harmonic_weights.py`; NumPy's float32 SIMD
-  `sum`) and `branch_recraft` (`shim/recraft.py`; NumPy's `np.log` in the
-  `contemporary` test). Everything else is byte-identical Rust. Needs Python 3 +
-  NumPy at run time (set `GT_PYTHON`); without it, it falls back to the pure-Rust
-  path with a warning. `--native` forces the pure-Rust path: self-contained and
-  fast, topologically ~99% but not byte-identical (see below).
+  *Campylobacter* cgMLST set (same md5 as upstream). The minimum spanning
+  arborescence is now a **faithful pure-Rust port of the `edmonds` C binary**
+  (`src/edmonds_tofigh.rs`, Ali Tofigh's `edmonds_optimum_branching` — same
+  critical-edge tie-break, cycle contraction and edge *emission order*), so **no
+  external binary is needed** and the arborescence is byte-identical (verified: the
+  full regression suite 116/116 byte-identical, and campy 63k same md5). Only the
+  two numerical steps that are *not* portably reproducible in Rust stay in NumPy —
+  the harmonic weights (`shim/harmonic_weights.py`; NumPy's float32 SIMD `sum`) and
+  `branch_recraft` (`shim/recraft.py`; NumPy's `np.log` in the `contemporary`
+  test). Needs Python 3 + NumPy at run time (set `GT_PYTHON`). `GT_EDMONDS_BINARY=1`
+  forces the bundled C binary instead of the port (for cross-validation).
+  `--native` forces a fully pure-Rust path (native weights + recraft too):
+  self-contained and fast, topologically ~99% but not byte-identical (see below).
 - **`NJ` / `RapidNJ`** — **bit-identical by default** by delegating to the bundled
   FastME/RapidNJ binaries + a small ete3 post-processing shim (`shim/`), exactly
   the reference toolchain. Requires the binaries + Python 3 with `ete3` at run
@@ -117,8 +121,8 @@ examples. See `regression/run_all.sh`.
   is broken on Java ≥ 9 (`java -d64` was removed), so it can't be validated
   against the reference on modern JVMs.
 
-Aggregate: **92 byte-identical, 23 topology-identical (RF=0), 1 NJ tie-break
-difference**, thread-count invariant.
+Aggregate (default mode, Rust `edmonds` port): **116 byte-identical, 0 failed**,
+thread-count invariant, gzip==plain, FASTA runs (`regression/run_all.sh`).
 
 Two upstream bugs are fixed simply by porting cleanly:
 - `--wgMLST` is dead code in the reference (a local variable never propagates),
@@ -139,13 +143,20 @@ Python + compiled-binary pipeline at every size tested (see `BENCHMARKS.md`):
 | 2000 | 2.9× | 1.3× |
 
 **At 60k+ samples** the minimum spanning arborescence (not the distance step)
-dominates, because the reduced graph is near-complete. grapetree-rs picks the
-right Chu-Liu/Edmonds for the size: the skew-heap (`O(E log V)`) below 10k
-survivors, and a **dense `O(V)`-memory contraction** above it — both return the
-identical arborescence. On a real *Campylobacter* set (63,005 samples × 1,142
-loci, 64 threads) MSTreeV2 completes in **3 min 28 s at 46 GB**; the skew-heap
-alone would need ~20 GB of edge list and had not finished in 35 min. See
-`BENCHMARKS.md`.
+dominates, because the reduced graph is near-complete. The default bit-identical
+path runs the arborescence through the **pure-Rust port of the `edmonds` binary**,
+which is both far faster and far lighter than shelling out to the C binary. On a
+real *Campylobacter* set (63,005 samples × 1,142 loci, 64 threads):
+
+| MSTreeV2, byte-identical (same md5) | wall | peak RAM |
+|---|---|---|
+| upstream GrapeTree (Python + `edmonds` C binary) | 18 min 48 s | 139 GB |
+| grapetree-rs via the bundled `edmonds` C binary | 11 min 35 s | 139 GB |
+| **grapetree-rs default (Rust `edmonds` port)** | **3 min 48 s** | **39 GB** |
+
+The Rust port does the arborescence in ~19 s vs the C binary's ~480 s (no
+5 GB text round-trip, no 606M-edge Boost graph). `--native` (topological, not
+byte-identical) is comparable in speed and RAM. See `BENCHMARKS.md`.
 
 ## Regression suite
 
@@ -166,6 +177,7 @@ src/distance.rs   symmetric/asymmetric/wgMLST/blockwise matrices (rayon)
 src/heuristic.rs  harmonic / eBurst weights
 src/mst.rs        Kruskal MST + get_shortcut + symmetric_link
 src/edmonds.rs    optimum branching (Chu-Liu/Edmonds): skew-heap + dense O(V)-mem
+src/edmonds_tofigh.rs  pure-Rust port of the `edmonds` binary (byte-identical, default)
 src/recraft.rs    branch_recraft + contemporary (native, pure Rust)
 src/nj.rs         canonical Neighbor-Joining
 src/tree.rs       tree assembly + NEWICK writer

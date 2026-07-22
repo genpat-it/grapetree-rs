@@ -9,6 +9,7 @@
 pub mod cli;
 pub mod distance;
 pub mod edmonds;
+pub mod edmonds_tofigh;
 pub mod heuristic;
 pub mod mst;
 pub mod nj;

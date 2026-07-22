@@ -200,6 +200,11 @@ pub fn asymmetric_network(dist: &DistMatrix, weight: &[f64]) -> Vec<(usize, usiz
         } else {
             edmonds::optimum_branching(m, |i, j| Some(cost(i, j)))
         };
+        if std::env::var("GT_MARGIN").is_ok() {
+            let arb_orig: Vec<(usize, usize)> =
+                arb.iter().map(|&(u, v)| (kept[u], kept[v])).collect();
+            margin_report(&d, n, &kept, &arb_orig);
+        }
         for (u, v) in arb {
             let (os, ot) = (kept[u], kept[v]);
             // Reproduce the reference's edmonds text round-trip exactly: the
@@ -217,6 +222,140 @@ pub fn asymmetric_network(dist: &DistMatrix, weight: &[f64]) -> Vec<(usize, usiz
         edges.push((s, t, brlen));
     }
     edges
+}
+
+/// Δ (allelic margin) diagnostic for the asymmetric arborescence — opt-in via
+/// `GT_MARGIN`. Non-invasive: it measures, per chosen edge `p -> j`, by how many
+/// *whole alleles* the chosen parent beats the runner-up parent, separating the
+/// data (integer allelic distance `round(d)`) from the harmonic tie-break. It
+/// prints a report to stderr and does **not** change the topology.
+///
+/// The candidate parents of `j` are the survivors **outside `j`'s subtree** — the
+/// only nodes `j` could be reattached to and still have a valid arborescence.
+/// (Descendants are excluded: attaching `j` under its own descendant makes a
+/// cycle.) With subtree exclusion the measure is rigorous: by optimality of the
+/// spanning arborescence, for every admissible `q`, `cost(p->j) ≤ cost(q->j)`, so
+/// in whole alleles `Δ = min_q round(d[q][j]) - round(d[p][j]) ≥ 0` always.
+///  - `Δ ≥ 1` → **solid**: the chosen parent is uniquely closest (by ≥1 allele).
+///  - `Δ = 0` (`k ≥ 2` co-optimal) → **dashed**: an admissible parent is exactly as
+///    close; only the harmonic weight picked one — the choice is not in the data.
+///
+/// A subtree is tested in O(1) via Euler-tour in/out times computed once. Any
+/// `Δ < 0` would signal a non-optimal arborescence (a bug) — reported if seen.
+fn margin_report(d: &[f32], n: usize, kept: &[usize], arb_orig: &[(usize, usize)]) {
+    use rayon::prelude::*;
+    let m = kept.len();
+
+    // children adjacency + root (the survivor with no incoming arborescence edge).
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut has_parent = vec![false; n];
+    for &(p, j) in arb_orig {
+        children[p].push(j);
+        has_parent[j] = true;
+    }
+    let root = match kept.iter().copied().find(|&k| !has_parent[k]) {
+        Some(r) => r,
+        None => {
+            eprintln!("[margin] no root found (cyclic?) — skipping");
+            return;
+        }
+    };
+    // Euler-tour in/out times (iterative DFS) so "q in subtree(j)" is an interval.
+    let mut tin = vec![0u32; n];
+    let mut tout = vec![0u32; n];
+    let mut timer = 0u32;
+    let mut stack: Vec<(usize, usize)> = vec![(root, 0)]; // (node, next-child idx)
+    tin[root] = timer;
+    timer += 1;
+    while let Some(&mut (node, ref mut ci)) = stack.last_mut() {
+        if *ci < children[node].len() {
+            let c = children[node][*ci];
+            *ci += 1;
+            tin[c] = timer;
+            timer += 1;
+            stack.push((c, 0));
+        } else {
+            tout[node] = timer;
+            timer += 1;
+            stack.pop();
+        }
+    }
+    let in_subtree = |j: usize, q: usize| tin[j] <= tin[q] && tin[q] <= tout[j];
+
+    // (delta, k) per edge over admissible (non-descendant) parents only.
+    let per: Vec<(i64, usize)> = arb_orig
+        .par_iter()
+        .map(|&(p, j)| {
+            let dp = d[p * n + j].round() as i64;
+            let mut d_other = i64::MAX;
+            let mut k = 0usize;
+            for &q in kept {
+                if q == j || in_subtree(j, q) {
+                    continue; // q==j or q is a descendant → not an admissible parent
+                }
+                let dqj = d[q * n + j].round() as i64;
+                if q != p && dqj < d_other {
+                    d_other = dqj;
+                }
+                if dqj == dp {
+                    k += 1; // admissible parents at the chosen allelic distance (incl. p)
+                }
+            }
+            let delta = if d_other == i64::MAX { 1 } else { d_other - dp };
+            (delta, k)
+        })
+        .collect();
+
+    let (mut solid, mut tie, mut forced) = (0usize, 0usize, 0usize);
+    let mut dhist: std::collections::BTreeMap<i64, usize> = Default::default();
+    let mut khist: std::collections::BTreeMap<usize, usize> = Default::default();
+    for &(delta, k) in &per {
+        *dhist.entry(delta.clamp(-1, 6)).or_default() += 1;
+        if delta >= 1 {
+            solid += 1;
+        } else if delta == 0 {
+            tie += 1;
+            *khist.entry(k.min(6)).or_default() += 1;
+        } else {
+            forced += 1;
+        }
+    }
+    let tot = per.len().max(1) as f64;
+    eprintln!("[margin] survivors m={m}  arborescence_edges={}", per.len());
+    eprintln!(
+        "[margin]   solid   (Δ≥1, data-supported)              : {solid} ({:.2}%)",
+        100.0 * solid as f64 / tot
+    );
+    eprintln!(
+        "[margin]   dashed  (Δ=0, tie broken by harmonic weight): {tie} ({:.2}%)",
+        100.0 * tie as f64 / tot
+    );
+    if forced > 0 {
+        eprintln!(
+            "[margin]   SANITY  (Δ<0 — should be impossible, non-optimal?): {forced} ({:.2}%)",
+            100.0 * forced as f64 / tot
+        );
+    }
+    let dlabel = |v: i64| match v {
+        -1 => "<0".to_string(),
+        6 => "6+".to_string(),
+        x => x.to_string(),
+    };
+    let dh: Vec<String> = dhist
+        .iter()
+        .map(|(&v, &c)| format!("Δ{}={}", dlabel(v), c))
+        .collect();
+    eprintln!("[margin]   Δ histogram: {}", dh.join("  "));
+    if !khist.is_empty() {
+        let kh: Vec<String> = khist
+            .iter()
+            .map(|(&v, &c)| {
+                let lab = if v >= 6 { "6+".to_string() } else { v.to_string() };
+                format!("k{lab}={c}")
+            })
+            .collect();
+        eprintln!("[margin]   co-optimal parents on dashed edges: {}", kh.join("  "));
+    }
 }
 
 /// Round half to even (NumPy's `np.round` convention), so the reduced-matrix
@@ -269,39 +408,76 @@ pub fn asymmetric_network_exact(
     if m >= 2 {
         // reduced cost matrix = round(dmod)+weight[src], diagonal 0, written as
         // "%.5f" of (value + 0.999995) — the exact reference file format.
-        let mut buf = String::with_capacity(m * m * 8);
-        for i in 0..m {
-            for j in 0..m {
-                if j > 0 {
-                    buf.push('\t');
-                }
-                // GRAPETREE-COMPAT[edmonds-reduced-f32]: the reference builds the
-                // reduced matrix as `np.round(dmod) + weight2` in float32 (both
-                // operands float32), then writes `value + (1 - 0.000005)` at
-                // %.5f. We must do the round+weight add in f32 too, else a ~1e-8
-                // difference flips the 5th decimal and the binary's tie-breaks.
-                // GRAPETREE-COMPAT[edmonds-reduced-f32]: the reference row is a
-                // float32 array `np.round(dmod)+weight2`, and `d + (1.-0.000005)`
-                // adds the offset in float32 too (numpy: f32 array + python float
-                // → f32). The constant is `1.-0.000005` evaluated in f64 then cast
-                // to f32 (numpy casts the scalar when adding). Doing the offset add
-                // in f64 flips the 5th decimal vs the reference.
-                const OFF: f32 = (1.0_f64 - 0.000005_f64) as f32;
-                let base: f32 = if i == j {
-                    0.0
-                } else {
-                    (np_round(d[kept[i] * n + kept[j]] as f64) as f32) + (weight[kept[i]] as f32)
-                };
-                let dd = base + OFF;
-                buf.push_str(&format!("{:.5}", dd as f64));
-            }
-            buf.push('\n');
-        }
+        // GRAPETREE-COMPAT[edmonds-reduced-f32]: the reference builds the reduced
+        // matrix as `np.round(dmod) + weight2` in float32 (both operands float32),
+        // then writes `value + (1.-0.000005)` at %.5f. We must do the round+weight
+        // add AND the offset add in f32 too (numpy: f32 array + python float → f32,
+        // the constant cast to f32), else a ~1e-8 difference flips the 5th decimal
+        // and the binary's tie-breaks. The per-cell `format!("{:.5}", dd as f64)`
+        // is preserved verbatim — the rows below are only formatted in parallel and
+        // streamed in chunks, so the bytes written are byte-identical to before
+        // (no 5 GB intermediate String, and 606M float formats spread over cores).
+        use rayon::prelude::*;
+        use std::io::Write as _;
+        const OFF: f32 = (1.0_f64 - 0.000005_f64) as f32;
+        let timing = std::env::var("GT_TIMING").is_ok();
+        let t_build = std::time::Instant::now();
         let path = std::env::temp_dir().join(format!("gt_edmonds_{}.list", std::process::id()));
-        std::fs::write(&path, &buf).ok()?;
+        let file = std::fs::File::create(&path).ok()?;
+        let mut wtr = std::io::BufWriter::with_capacity(1 << 22, file);
+        const CHUNK: usize = 256; // ~256*m*8 bytes peak (~50 MB at m≈25k)
+        let mut r0 = 0usize;
+        while r0 < m {
+            let r1 = (r0 + CHUNK).min(m);
+            let rows: Vec<String> = (r0..r1)
+                .into_par_iter()
+                .map(|i| {
+                    let mut s = String::with_capacity(m * 8);
+                    let ki_n = kept[i] * n;
+                    let wi = weight[kept[i]] as f32;
+                    for j in 0..m {
+                        if j > 0 {
+                            s.push('\t');
+                        }
+                        let base: f32 = if i == j {
+                            0.0
+                        } else {
+                            (np_round(d[ki_n + kept[j]] as f64) as f32) + wi
+                        };
+                        let dd = base + OFF;
+                        s.push_str(&format!("{:.5}", dd as f64));
+                    }
+                    s.push('\n');
+                    s
+                })
+                .collect();
+            for s in &rows {
+                wtr.write_all(s.as_bytes()).ok()?;
+            }
+            r0 = r1;
+        }
+        wtr.flush().ok()?;
+        drop(wtr);
+        if timing {
+            eprintln!(
+                "[timing]   reduced-matrix build+write: {:.2}s (m={m})",
+                t_build.elapsed().as_secs_f64()
+            );
+        }
+        // The collapsed working matrix is dead once the reduced file is written;
+        // free its ~N²×4 bytes (a full matrix clone) BEFORE the edmonds binary
+        // allocates its 606M-edge graph, so the two don't coexist at the peak.
+        drop(d);
+        let t_bin = std::time::Instant::now();
         let out = Command::new(edmonds_path).arg(&path).output();
         let _ = std::fs::remove_file(&path);
         let out = out.ok()?;
+        if timing {
+            eprintln!(
+                "[timing]   edmonds binary: {:.2}s",
+                t_bin.elapsed().as_secs_f64()
+            );
+        }
         if !out.status.success() {
             return None;
         }
@@ -329,6 +505,87 @@ pub fn asymmetric_network_exact(
         edges.push((s, t, (dist.get(s, t) as f64 + weight[s]).trunc()));
     }
     Some(edges)
+}
+
+/// Binary-free bit-identical arborescence: the same reduced-matrix quantisation
+/// as [`asymmetric_network_exact`], but the minimum spanning arborescence comes
+/// from the faithful Rust port of the `edmonds` binary
+/// ([`crate::edmonds_tofigh::optimum_branching_tofigh`]) instead of shelling out
+/// to the C binary. Verified edge- and order-identical to the binary on random
+/// matrices, so the `(source, target, brlen)` triples — and their order, which
+/// `branch_recraft` depends on — are byte-identical, without the binary's cost.
+pub fn asymmetric_network_binfree(dist: &DistMatrix, weight: &[f64]) -> Vec<(usize, usize, f64)> {
+    use rayon::prelude::*;
+    let n = dist.n;
+    let shortcuts = get_shortcut(dist, weight);
+    let mut d: Vec<f32> = dist.data.clone();
+    for &(s, t) in &shortcuts {
+        for k in 0..n {
+            if d[s * n + k] > d[t * n + k] {
+                d[s * n + k] = d[t * n + k];
+            }
+        }
+    }
+    let mut removed = vec![false; n];
+    for &(_, t) in &shortcuts {
+        removed[t] = true;
+    }
+    let kept: Vec<usize> = (0..n).filter(|&i| !removed[i]).collect();
+    let m = kept.len();
+
+    let mut edges: Vec<(usize, usize, f64)> = Vec::new();
+    if m >= 2 {
+        let timing = std::env::var("GT_TIMING").is_ok();
+        let t_q = std::time::Instant::now();
+        // Quantised cost EXACTLY as the binary's `%.5f` file: `round(dmod)+weight2
+        // + (1.-0.000005)` (all f32), round-tripped through f64. Built in parallel.
+        const OFF: f32 = (1.0_f64 - 0.000005_f64) as f32;
+        let mut qmat = vec![0f64; m * m];
+        qmat.par_chunks_mut(m).enumerate().for_each(|(i, row)| {
+            let ki_n = kept[i] * n;
+            let wi = weight[kept[i]] as f32;
+            for (j, cell) in row.iter_mut().enumerate() {
+                *cell = if i == j {
+                    0.0
+                } else {
+                    let dd = (np_round(d[ki_n + kept[j]] as f64) as f32 + wi) + OFF;
+                    format!("{:.5}", dd as f64).parse::<f64>().unwrap()
+                };
+            }
+        });
+        drop(d);
+        if timing {
+            eprintln!(
+                "[timing]   quantised-matrix build: {:.2}s (m={m})",
+                t_q.elapsed().as_secs_f64()
+            );
+        }
+        let t_e = std::time::Instant::now();
+        let arb = crate::edmonds_tofigh::optimum_branching_tofigh(m, |i, j| qmat[i * m + j]);
+        if timing {
+            eprintln!(
+                "[timing]   native tofigh edmonds: {:.2}s",
+                t_e.elapsed().as_secs_f64()
+            );
+        }
+        for (u, v) in arb {
+            // brlen exactly as the binary emits then GrapeTree parses:
+            //   weight stored as `float` (f32), printed by `std::cout << double`
+            //   (defaultfloat, precision 6 == %.6g), parsed, `.astype(int)` (trunc),
+            //   then `- 1`. The 6-significant-figure rounding is load-bearing: it
+            //   rounds e.g. 21.99998 up to 22.0, flipping the trunc. `{:.5e}` gives
+            //   6 significant figures; parsing it back reproduces cout's value.
+            let g6: f64 = format!("{:.5e}", qmat[u * m + v] as f32 as f64)
+                .parse()
+                .unwrap();
+            let brlen = g6.trunc() - 1.0;
+            edges.push((kept[u], kept[v], brlen));
+        }
+    }
+    for &(s, t) in &shortcuts {
+        edges.push((s, t, (dist.get(s, t) as f64 + weight[s]).trunc()));
+    }
+    edges
 }
 
 /// Per-row presence used by `symmetric_link`, matching the reference.

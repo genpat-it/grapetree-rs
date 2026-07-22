@@ -348,19 +348,26 @@ fn main() -> Result<()> {
                     // bundled `edmonds` binary (as upstream does). `--native`
                     // uses the pure-Rust Edmonds (equivalent, not bit-identical).
                     let net = if params.native {
+                        // topological pure-Rust arborescence (fast, RF=0, not byte-identical)
                         mst::asymmetric_network(&dm, &weight)
-                    } else {
+                    } else if std::env::var("GT_EDMONDS_BINARY").is_ok() {
+                        // validation path: the bundled reference `edmonds` C binary.
                         match resolve_edmonds() {
                             Some(path) => mst::asymmetric_network_exact(&dm, &weight, &path)
                                 .unwrap_or_else(|| {
-                                    eprintln!("[grapetree-rs] edmonds binary failed; falling back to native (equivalent, not bit-identical)");
-                                    mst::asymmetric_network(&dm, &weight)
+                                    eprintln!("[grapetree-rs] edmonds binary failed; using the native bit-identical port");
+                                    mst::asymmetric_network_binfree(&dm, &weight)
                                 }),
                             None => {
-                                eprintln!("[grapetree-rs] edmonds binary not found; using native (equivalent, not bit-identical). Set GT_EDMONDS or pass --native to silence.");
-                                mst::asymmetric_network(&dm, &weight)
+                                eprintln!("[grapetree-rs] GT_EDMONDS_BINARY set but binary not found; using the native bit-identical port");
+                                mst::asymmetric_network_binfree(&dm, &weight)
                             }
                         }
+                    } else {
+                        // DEFAULT: faithful Rust port of the `edmonds` binary — byte-identical
+                        // to the reference (verified: regression 116/116, campy 63k same md5),
+                        // no external binary, ~14× faster and far less memory than the C binary.
+                        mst::asymmetric_network_binfree(&dm, &weight)
                     };
                     if timing {
                         eprintln!("[timing] arborescence: {:.2}s", t2.elapsed().as_secs_f64());

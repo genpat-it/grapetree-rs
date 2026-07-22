@@ -269,3 +269,31 @@ gradients, blockwise-ordered loci). Compare:
   boundary and jumps the discrete outcome (a leaf's parent) by up to 747 alleles.
   This is the "robust geometric predicates" problem; GrapeTree lacks the exact/
   canonical tie-breaking that would make its combinatorial output reproducible.
+
+- 2026-07-23: **Binary-free bit-identity — pure-Rust port of the `edmonds` C
+  binary (now the default).** The last external dependency of the bit-identical
+  MSTreeV2 path was the bundled `edmonds` C binary (Ali Tofigh's
+  `edmonds_optimum_branching`, Boost). It dominated cost at scale: ~480 s and the
+  606M-edge Boost graph (~130 GB) on campy 63k. Ported it faithfully to Rust
+  (`src/edmonds_tofigh.rs`, `optimum_branching_tofigh`): per-target in-edges sorted
+  by source ascending, LIFO roots stack, critical-edge = min weight with ties →
+  lowest source, cycle contraction breaking the max-weight cycle edge, and the
+  F/λ/children expansion that reproduces the binary's exact **edge emission order**
+  (load-bearing because `branch_recraft` is order-sensitive). Weights held as
+  f32-widened f64 (the binary reads via `float atof`). **Subtle bug:** the binary
+  prints weights with `std::cout << double` = 6 significant figures (`%.6g`), which
+  rounds e.g. 21.99998 → 22.0 and flips the brlen `trunc`; reproduced with `{:.5e}`
+  (6 sig figs) before `.trunc()-1`. Verified byte-identical: a direct arborescence
+  test vs the binary on random matrices (n=2..40, order-sensitive), the full
+  regression suite (116/116 byte-identical, 0 failed), 7 pipeline datasets, and the
+  campy 63k set (same md5 `d615b4f…`). **Now the default**; `GT_EDMONDS_BINARY=1`
+  forces the old C-binary path for cross-validation. Result on campy 63k:
+  **3m48s / 39 GB** (vs the C-binary path 11m35s / 139 GB; upstream 18m48s / 139 GB)
+  — the arborescence itself is ~19 s vs the binary's ~480 s (no 5 GB text
+  round-trip, no Boost graph). Memory of the port trimmed by keeping the F-forest
+  links (parent/children/removed) in sparse maps over only the O(V) critical edges
+  (a dense `Vec<Vec>` of 606M near-empty headers alone was ~15 GB) and u32 edge ids;
+  the shims switched to `np.memmap` + row-blocked harmonic sum so NumPy no longer
+  copies the 13 GB matrix into RAM (both bit-identical: per-row float32 sums are
+  over identical data). Only `np.log` (recraft) and the float32 harmonic `sum` stay
+  in NumPy — the two genuinely non-portable numerics.

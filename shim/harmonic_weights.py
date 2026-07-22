@@ -25,12 +25,22 @@ import numpy as np
 def main():
     dist_path, n_s, nstr_path, out_path = sys.argv[1:5]
     n = int(n_s)
-    dist = np.fromfile(dist_path, dtype="<f4").reshape(n, n)
+    # memmap (not fromfile) so the 13 GB matrix isn't copied into RAM, and sum the
+    # reciprocal row-block-wise so the full N*N `1/(dist+0.1)` (~2*N*N f32) is never
+    # materialised. Each row's float32 pairwise sum is over identical contiguous
+    # data whether the row lives in the whole matrix or a block → bit-identical.
+    dist = np.memmap(dist_path, dtype="<f4", mode="r", shape=(n, n))
     n_str = np.loadtxt(nstr_path, dtype=int).reshape(-1)
     assert n_str.size == n, f"n_str size {n_str.size} != N {n}"
 
     # EXACT reference `distance_matrix.harmonic` (module/MSTrees.py):
-    weights = dist.shape[0] / np.sum(1.0 / (dist + 0.1), 1)
+    denom = np.empty(n, dtype="<f4")
+    chunk = 4096
+    for r0 in range(0, n, chunk):
+        r1 = min(r0 + chunk, n)
+        block = np.array(dist[r0:r1], dtype="<f4")
+        denom[r0:r1] = np.sum(1.0 / (block + 0.1), 1)
+    weights = n / denom
     cw = np.vstack([-np.asarray(n_str), weights])
     weights[np.lexsort(cw)] = np.arange(dist.shape[0], dtype=float) / dist.shape[0]
 

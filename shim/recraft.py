@@ -105,7 +105,10 @@ def main():
     net_p, dist_p, n_s, w_p, nloci_s, out_p = sys.argv[1:7]
     n = int(n_s)
     n_loci = int(nloci_s)
-    dist = np.fromfile(dist_p, dtype="<f4").reshape(n, n)
+    # memmap (not fromfile): branch_recraft touches only a subset of cells (the
+    # local recraft neighbourhood), so the OS pages in far less than the full
+    # 13 GB — same f32 values, so the result is bit-identical.
+    dist = np.memmap(dist_p, dtype="<f4", mode="r", shape=(n, n))
     weights = np.fromfile(w_p, dtype="<f4")
     branches = []
     with open(net_p) as fh:
