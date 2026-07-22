@@ -540,7 +540,10 @@ pub fn asymmetric_network_binfree(dist: &DistMatrix, weight: &[f64]) -> Vec<(usi
         // Quantised cost EXACTLY as the binary's `%.5f` file: `round(dmod)+weight2
         // + (1.-0.000005)` (all f32), round-tripped through f64. Built in parallel.
         const OFF: f32 = (1.0_f64 - 0.000005_f64) as f32;
-        let mut qmat = vec![0f64; m * m];
+        // Store the quantised costs as f32 — the binary reads them via `float atof`
+        // anyway, so f32 is the value actually used; halves this matrix (~2.4 GB at
+        // 63k) with no change to the result.
+        let mut qmat = vec![0f32; m * m];
         qmat.par_chunks_mut(m).enumerate().for_each(|(i, row)| {
             let ki_n = kept[i] * n;
             let wi = weight[kept[i]] as f32;
@@ -549,7 +552,7 @@ pub fn asymmetric_network_binfree(dist: &DistMatrix, weight: &[f64]) -> Vec<(usi
                     0.0
                 } else {
                     let dd = (np_round(d[ki_n + kept[j]] as f64) as f32 + wi) + OFF;
-                    format!("{:.5}", dd as f64).parse::<f64>().unwrap()
+                    format!("{:.5}", dd as f64).parse::<f64>().unwrap() as f32
                 };
             }
         });
@@ -561,7 +564,7 @@ pub fn asymmetric_network_binfree(dist: &DistMatrix, weight: &[f64]) -> Vec<(usi
             );
         }
         let t_e = std::time::Instant::now();
-        let arb = crate::edmonds_tofigh::optimum_branching_tofigh(m, |i, j| qmat[i * m + j]);
+        let arb = crate::edmonds_tofigh::optimum_branching_tofigh(m, |i, j| qmat[i * m + j] as f64);
         if timing {
             eprintln!(
                 "[timing]   native tofigh edmonds: {:.2}s",
@@ -575,7 +578,7 @@ pub fn asymmetric_network_binfree(dist: &DistMatrix, weight: &[f64]) -> Vec<(usi
             //   then `- 1`. The 6-significant-figure rounding is load-bearing: it
             //   rounds e.g. 21.99998 up to 22.0, flipping the trunc. `{:.5e}` gives
             //   6 significant figures; parsing it back reproduces cout's value.
-            let g6: f64 = format!("{:.5e}", qmat[u * m + v] as f32 as f64)
+            let g6: f64 = format!("{:.5e}", qmat[u * m + v] as f64)
                 .parse()
                 .unwrap();
             let brlen = g6.trunc() - 1.0;
