@@ -43,11 +43,13 @@ cargo test --release       # unit + property tests
 
 ## Docker
 
-Prebuilt image on GHCR (the package is **private** — `docker login ghcr.io` with a
-`read:packages` PAT to pull):
+A prebuilt image is published to GHCR on every release. Pull `:latest` or a
+version tag:
 
 ```bash
-docker pull ghcr.io/genpat-it/grapetree-rs:latest
+# if the GHCR package is private, authenticate first (PAT with read:packages):
+#   echo "$PAT" | docker login ghcr.io -u <username> --password-stdin
+docker pull ghcr.io/genpat-it/grapetree-rs:latest      # or :0.1.1
 ```
 
 The image runs the **default byte-identical mode**: the minimum spanning
@@ -55,14 +57,25 @@ arborescence is the **pure-Rust `edmonds` port** (no C binary), and the two
 non-portable numerics use the bundled NumPy shims — so the output is
 **byte-identical** to upstream GrapeTree.
 
+Mount the directory with your profile and pass grapetree's usual flags after the
+image name:
+
 ```bash
-# MSTreeV2 — byte-identical to upstream GrapeTree, edmonds in Rust, no C binary:
+# MSTreeV2 (default) — byte-identical to upstream, edmonds in Rust, no C binary:
 docker run --rm -v "$PWD":/data ghcr.io/genpat-it/grapetree-rs:latest \
     -p /data/profiles.tsv -m MSTreeV2 > tree.nwk
+
+# PHYLIP distance matrix:
+docker run --rm -v "$PWD":/data ghcr.io/genpat-it/grapetree-rs:latest \
+    -p /data/profiles.tsv -m distance > dist.tsv
+
+# symmetric MST:
+docker run --rm -v "$PWD":/data ghcr.io/genpat-it/grapetree-rs:latest \
+    -p /data/profiles.tsv -m MSTree -x symmetric > sym.nwk
 ```
 
-`distance` / `MSTree` / `MSTreeV2` are covered out of the box; the NJ family needs
-the optional `ete3` + FastME/RapidNJ/Ninja layer (see the `Dockerfile`). Pass
+`distance` / `MSTree` / `MSTreeV2` work out of the box; the NJ family needs the
+optional `ete3` + FastME/RapidNJ/Ninja layer (see the `Dockerfile`). Pass
 `--native` for a fully self-contained (topology-only, not byte-identical) run.
 
 ## Usage
