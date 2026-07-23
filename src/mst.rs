@@ -350,11 +350,18 @@ fn margin_report(d: &[f32], n: usize, kept: &[usize], arb_orig: &[(usize, usize)
         let kh: Vec<String> = khist
             .iter()
             .map(|(&v, &c)| {
-                let lab = if v >= 6 { "6+".to_string() } else { v.to_string() };
+                let lab = if v >= 6 {
+                    "6+".to_string()
+                } else {
+                    v.to_string()
+                };
                 format!("k{lab}={c}")
             })
             .collect();
-        eprintln!("[margin]   co-optimal parents on dashed edges: {}", kh.join("  "));
+        eprintln!(
+            "[margin]   co-optimal parents on dashed edges: {}",
+            kh.join("  ")
+        );
     }
 }
 
@@ -578,9 +585,7 @@ pub fn asymmetric_network_binfree(dist: &DistMatrix, weight: &[f64]) -> Vec<(usi
             //   then `- 1`. The 6-significant-figure rounding is load-bearing: it
             //   rounds e.g. 21.99998 up to 22.0, flipping the trunc. `{:.5e}` gives
             //   6 significant figures; parsing it back reproduces cout's value.
-            let g6: f64 = format!("{:.5e}", qmat[u * m + v] as f64)
-                .parse()
-                .unwrap();
+            let g6: f64 = format!("{:.5e}", qmat[u * m + v] as f64).parse().unwrap();
             let brlen = g6.trunc() - 1.0;
             edges.push((kept[u], kept[v], brlen));
         }

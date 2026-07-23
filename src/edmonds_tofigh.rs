@@ -70,7 +70,10 @@ const NIL: i64 = -1;
 /// `cost(i, j)` is the reduced-matrix value for `i -> j` (already the `%.5f`
 /// quantised value); it is stored as `f32`-widened `f64`, as the binary does.
 /// Returns arborescence edges `(source, target)` in the binary's print order.
-pub fn optimum_branching_tofigh(n: usize, cost: impl Fn(usize, usize) -> f64) -> Vec<(usize, usize)> {
+pub fn optimum_branching_tofigh(
+    n: usize,
+    cost: impl Fn(usize, usize) -> f64,
+) -> Vec<(usize, usize)> {
     use std::collections::{HashMap, HashSet};
     if n <= 1 {
         return Vec::new();
@@ -253,7 +256,13 @@ pub fn optimum_branching_tofigh(n: usize, cost: impl Fn(usize, usize) -> f64) ->
     // remove edges entering the final roots.
     for &vtx in &final_roots {
         if lambda[vtx] != NIL {
-            remove_from_f(lambda[vtx] as usize, &mut f_roots, &mut removed_f, &mut parent, &mut children);
+            remove_from_f(
+                lambda[vtx] as usize,
+                &mut f_roots,
+                &mut removed_f,
+                &mut parent,
+                &mut children,
+            );
         }
     }
     let mut out: Vec<(usize, usize)> = Vec::new();
@@ -264,7 +273,13 @@ pub fn optimum_branching_tofigh(n: usize, cost: impl Fn(usize, usize) -> f64) ->
         out.push((e_src[en] as usize, e_tgt[en] as usize));
         let t = e_tgt[en] as usize;
         if lambda[t] != NIL {
-            remove_from_f(lambda[t] as usize, &mut f_roots, &mut removed_f, &mut parent, &mut children);
+            remove_from_f(
+                lambda[t] as usize,
+                &mut f_roots,
+                &mut removed_f,
+                &mut parent,
+                &mut children,
+            );
         }
     }
     out
@@ -340,7 +355,7 @@ mod tests {
 
     #[test]
     fn tofigh_matches_binary_random() {
-        let mut seed: u64 = 0xC0FFEE_1234_5678;
+        let mut seed: u64 = 0xC0FF_EE12_3456_789A;
         let mut next = || {
             seed ^= seed << 13;
             seed ^= seed >> 7;
