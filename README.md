@@ -43,13 +43,10 @@ cargo test --release       # unit + property tests
 
 ## Docker
 
-A prebuilt image is published to GHCR on every release. Pull `:latest` or a
-version tag:
+A prebuilt image is published to GHCR on every release — public, pull anonymously:
 
 ```bash
-# if the GHCR package is private, authenticate first (PAT with read:packages):
-#   echo "$PAT" | docker login ghcr.io -u <username> --password-stdin
-docker pull ghcr.io/genpat-it/grapetree-rs:latest      # or :0.1.1
+docker pull ghcr.io/genpat-it/grapetree-rs:latest      # or a version tag, e.g. :0.1.3
 ```
 
 The image runs the **default byte-identical mode**: the minimum spanning
