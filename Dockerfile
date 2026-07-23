@@ -26,13 +26,17 @@ LABEL org.opencontainers.image.title="grapetree-rs" \
       org.opencontainers.image.licenses="GPL-3.0-or-later" \
       org.opencontainers.image.source="https://github.com/genpat-it/grapetree-rs"
 
-# Runtime deps for byte-identity across ALL methods:
+# Runtime deps for all methods:
 #  - NumPy (pinned to the reference's version): the MSTree/MSTreeV2 shims reproduce
 #    NumPy's own float32 SIMD summation and np.log — matching NumPy keeps the output
 #    byte-identical (subject to the usual CPU-SIMD caveat — see DECISIONS.md).
-#  - ete3: the NJ-family post-processing shim (midpoint root / unroot / write),
-#    exactly the reference toolchain. Needs Python < 3.13 (this image is 3.11).
-RUN pip install --no-cache-dir "numpy==1.26.4" "ete3==3.1.3" six
+#  - ete3 (+ its undeclared `six` dep): the NJ-family post-processing shim
+#    (midpoint root / unroot / write). Needs Python < 3.13 (this image is 3.11).
+#  - a headless JRE: to run the bundled Ninja.jar for the `ninja` method.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends default-jre-headless \
+ && rm -rf /var/lib/apt/lists/* \
+ && pip install --no-cache-dir "numpy==1.26.4" "ete3==3.1.3" six
 
 # Binary + shims + the bundled FastME/RapidNJ/Ninja binaries, side by side so the
 # binary's resolve_bundled() finds shim/ and binaries/ next to the executable.
@@ -46,8 +50,11 @@ ENV PATH="/opt/grapetree-rs:${PATH}" \
 ENTRYPOINT ["grapetree"]
 CMD ["--help"]
 
-# Byte-identical coverage in this image: distance, MSTree, MSTreeV2 (NumPy shims,
-# pure-Rust edmonds), and NJ / RapidNJ (FastME/RapidNJ binaries + ete3 shim).
-# `ninja` is NOT usable — upstream's `ninja` calls `java -d64`, removed in Java ≥ 9,
-# so even the reference can't run it; no JRE is bundled. `--native` gives a fully
-# self-contained (topology-only, not byte-identical) run for the NJ family.
+# Coverage in this image:
+#  - byte-identical: distance, MSTree, MSTreeV2 (NumPy shims + pure-Rust edmonds),
+#    NJ, RapidNJ (FastME/RapidNJ binaries + ete3 shim).
+#  - `ninja` RUNS and produces a valid NJ tree (Ninja.jar via a clean `java -jar`
+#    invocation — grapetree-rs fixes upstream's broken caller: `-d64` removed in
+#    Java ≥ 9, an `-Xmx` sized at 90% of total RAM, and an ete3 parse). It cannot be
+#    *byte-validated* against upstream because upstream's `ninja` produces no output
+#    at all on a modern JVM; we cross-check it as RF=0 to the byte-identical NJ.

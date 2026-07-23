@@ -74,11 +74,13 @@ docker run --rm -v "$PWD":/data ghcr.io/genpat-it/grapetree-rs:latest \
     -p /data/profiles.tsv -m MSTree -x symmetric > sym.nwk
 ```
 
-The image is **byte-identical across all methods** — `distance`, `MSTree`,
-`MSTreeV2` (NumPy shims + pure-Rust edmonds) **and** `NJ` / `RapidNJ` (bundled
-FastME/RapidNJ + ete3 shim). The only exception is `ninja`: upstream calls
-`java -d64` (removed in Java ≥ 9), so even the reference can't run it — use
-`--native` for a self-contained (topology-only) NJ instead.
+The image is **byte-identical across `distance`, `MSTree`, `MSTreeV2`** (NumPy
+shims + pure-Rust edmonds) **and `NJ` / `RapidNJ`** (bundled FastME/RapidNJ + ete3
+shim). **`ninja` also runs** (bundled Ninja.jar + a headless JRE) and yields a
+valid NJ tree — grapetree-rs fixes upstream's broken caller (`java -d64` removed
+in Java ≥ 9, an `-Xmx` sized at 90 % of total RAM). It can't be *byte-validated*
+against upstream — upstream's `ninja` produces no output at all on a modern JVM —
+so it is cross-checked as RF=0 to the byte-identical `NJ`.
 
 ## Usage
 
