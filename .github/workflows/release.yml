@@ -32,6 +32,10 @@ jobs:
           generate_release_notes: true
 
   docker:
+    # Byte-identical runtime image (static binary + Python/NumPy shims).
+    # Pushed to GHCR with the built-in GITHUB_TOKEN — the package is PRIVATE by
+    # default (pull needs `docker login ghcr.io` with a `read:packages` PAT).
+    # Flip to public once in Package settings if anonymous pulls are wanted.
     name: Docker image → GHCR
     runs-on: ubuntu-latest
     steps:
@@ -44,6 +48,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
+          target: runtime
           push: true
           tags: |
             ghcr.io/${{ github.repository }}:${{ github.ref_name }}
