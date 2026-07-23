@@ -1,6 +1,6 @@
 [package]
 name = "grapetree-rs"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 description = "Fast Rust port of GrapeTree (achtman-lab): MSTree / MSTreeV2 / NJ phylogenetics from cgMLST allelic profiles"
 license = "GPL-3.0-or-later"
