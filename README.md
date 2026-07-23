@@ -41,6 +41,30 @@ cargo build --release      # binary at target/release/grapetree
 cargo test --release       # unit + property tests
 ```
 
+## Docker
+
+Prebuilt image on GHCR (the package is **private** — `docker login ghcr.io` with a
+`read:packages` PAT to pull):
+
+```bash
+docker pull ghcr.io/genpat-it/grapetree-rs:latest
+```
+
+The image runs the **default byte-identical mode**: the minimum spanning
+arborescence is the **pure-Rust `edmonds` port** (no C binary), and the two
+non-portable numerics use the bundled NumPy shims — so the output is
+**byte-identical** to upstream GrapeTree.
+
+```bash
+# MSTreeV2 — byte-identical to upstream GrapeTree, edmonds in Rust, no C binary:
+docker run --rm -v "$PWD":/data ghcr.io/genpat-it/grapetree-rs:latest \
+    -p /data/profiles.tsv -m MSTreeV2 > tree.nwk
+```
+
+`distance` / `MSTree` / `MSTreeV2` are covered out of the box; the NJ family needs
+the optional `ete3` + FastME/RapidNJ/Ninja layer (see the `Dockerfile`). Pass
+`--native` for a fully self-contained (topology-only, not byte-identical) run.
+
 ## Usage
 
 ```bash
