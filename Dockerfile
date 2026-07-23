@@ -26,15 +26,19 @@ LABEL org.opencontainers.image.title="grapetree-rs" \
       org.opencontainers.image.licenses="GPL-3.0-or-later" \
       org.opencontainers.image.source="https://github.com/genpat-it/grapetree-rs"
 
-# NumPy pinned to the reference's version: the shims reproduce NumPy's own float32
-# SIMD summation and np.log, so matching NumPy keeps the output byte-identical
-# (subject to the usual CPU-SIMD reproducibility caveat — see DECISIONS.md).
-RUN pip install --no-cache-dir "numpy==1.26.4"
+# Runtime deps for byte-identity across ALL methods:
+#  - NumPy (pinned to the reference's version): the MSTree/MSTreeV2 shims reproduce
+#    NumPy's own float32 SIMD summation and np.log — matching NumPy keeps the output
+#    byte-identical (subject to the usual CPU-SIMD caveat — see DECISIONS.md).
+#  - ete3: the NJ-family post-processing shim (midpoint root / unroot / write),
+#    exactly the reference toolchain. Needs Python < 3.13 (this image is 3.11).
+RUN pip install --no-cache-dir "numpy==1.26.4" "ete3==3.1.3" six
 
-# Binary and shims live side by side so the binary's resolve_bundled() finds shim/
-# next to the executable at runtime.
+# Binary + shims + the bundled FastME/RapidNJ/Ninja binaries, side by side so the
+# binary's resolve_bundled() finds shim/ and binaries/ next to the executable.
 COPY --from=build /src/target/release/grapetree /opt/grapetree-rs/grapetree
 COPY shim /opt/grapetree-rs/shim
+COPY binaries /opt/grapetree-rs/binaries
 
 ENV PATH="/opt/grapetree-rs:${PATH}" \
     GT_PYTHON=python3
@@ -42,13 +46,8 @@ ENV PATH="/opt/grapetree-rs:${PATH}" \
 ENTRYPOINT ["grapetree"]
 CMD ["--help"]
 
-# ---- NJ family (optional) ----
-# `NJ`/`RapidNJ`/`ninja` need ete3 + the FastME/RapidNJ/Ninja binaries (and a JRE
-# for ninja) for byte-identity, exactly like upstream GrapeTree. To enable them,
-# extend this stage with:
-#   RUN pip install --no-cache-dir "ete3<3.1.4" \
-#    && apt-get update && apt-get install -y --no-install-recommends default-jre-headless \
-#    && rm -rf /var/lib/apt/lists/*
-#   COPY binaries /opt/grapetree-rs/binaries
-# (ete3 requires Python < 3.13.) Otherwise `--native` gives a self-contained,
-# topology-identical NJ with no extra dependencies.
+# Byte-identical coverage in this image: distance, MSTree, MSTreeV2 (NumPy shims,
+# pure-Rust edmonds), and NJ / RapidNJ (FastME/RapidNJ binaries + ete3 shim).
+# `ninja` is NOT usable — upstream's `ninja` calls `java -d64`, removed in Java ≥ 9,
+# so even the reference can't run it; no JRE is bundled. `--native` gives a fully
+# self-contained (topology-only, not byte-identical) run for the NJ family.

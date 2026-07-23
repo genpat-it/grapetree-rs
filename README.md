@@ -74,9 +74,11 @@ docker run --rm -v "$PWD":/data ghcr.io/genpat-it/grapetree-rs:latest \
     -p /data/profiles.tsv -m MSTree -x symmetric > sym.nwk
 ```
 
-`distance` / `MSTree` / `MSTreeV2` work out of the box; the NJ family needs the
-optional `ete3` + FastME/RapidNJ/Ninja layer (see the `Dockerfile`). Pass
-`--native` for a fully self-contained (topology-only, not byte-identical) run.
+The image is **byte-identical across all methods** — `distance`, `MSTree`,
+`MSTreeV2` (NumPy shims + pure-Rust edmonds) **and** `NJ` / `RapidNJ` (bundled
+FastME/RapidNJ + ete3 shim). The only exception is `ninja`: upstream calls
+`java -d64` (removed in Java ≥ 9), so even the reference can't run it — use
+`--native` for a self-contained (topology-only) NJ instead.
 
 ## Usage
 

@@ -4,3 +4,4 @@ target
 *.md
 regression
 benches
+binaries/tmp*
